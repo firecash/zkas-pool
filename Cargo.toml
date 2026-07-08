@@ -179,3 +179,73 @@ module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
+
+# --- FireCash fork: redirect all rusty-kaspa v2.0.1 git crates to our local fork ---
+# Our fork IS rusty-kaspa v2.0.1 (+ shielded/kHeavyHash/firecash-address changes),
+# so patching every kaspa-* crate makes the pool natively FireCash-aware and keeps a
+# single copy of each crate (no upstream/fork duplication in the dep graph).
+[patch."https://github.com/kaspanet/rusty-kaspa"]
+kaspa-addresses = { path = "/root/work/rusty-kaspa/crypto/addresses" }
+kaspa-addressmanager = { path = "/root/work/rusty-kaspa/components/addressmanager" }
+kaspa-alloc = { path = "/root/work/rusty-kaspa/utils/alloc" }
+kaspa-bip32 = { path = "/root/work/rusty-kaspa/wallet/bip32" }
+kaspa-build-info = { path = "/root/work/rusty-kaspa/build-info" }
+kaspa-cli = { path = "/root/work/rusty-kaspa/cli" }
+kaspa-connectionmanager = { path = "/root/work/rusty-kaspa/components/connectionmanager" }
+kaspa-consensus = { path = "/root/work/rusty-kaspa/consensus" }
+kaspa-consensus-client = { path = "/root/work/rusty-kaspa/consensus/client" }
+kaspa-consensus-core = { path = "/root/work/rusty-kaspa/consensus/core" }
+kaspa-consensus-notify = { path = "/root/work/rusty-kaspa/consensus/notify" }
+kaspa-consensus-wasm = { path = "/root/work/rusty-kaspa/consensus/wasm" }
+kaspa-consensusmanager = { path = "/root/work/rusty-kaspa/components/consensusmanager" }
+kaspa-core = { path = "/root/work/rusty-kaspa/core" }
+kaspa-daemon = { path = "/root/work/rusty-kaspa/daemon" }
+kaspa-database = { path = "/root/work/rusty-kaspa/database" }
+kaspa-grpc-client = { path = "/root/work/rusty-kaspa/rpc/grpc/client" }
+kaspa-grpc-core = { path = "/root/work/rusty-kaspa/rpc/grpc/core" }
+kaspa-grpc-server = { path = "/root/work/rusty-kaspa/rpc/grpc/server" }
+kaspa-hashes = { path = "/root/work/rusty-kaspa/crypto/hashes" }
+kaspa-index-core = { path = "/root/work/rusty-kaspa/indexes/core" }
+kaspa-index-processor = { path = "/root/work/rusty-kaspa/indexes/processor" }
+kaspa-math = { path = "/root/work/rusty-kaspa/math" }
+kaspa-merkle = { path = "/root/work/rusty-kaspa/crypto/merkle" }
+kaspa-metrics-core = { path = "/root/work/rusty-kaspa/metrics/core" }
+kaspa-mining = { path = "/root/work/rusty-kaspa/mining" }
+kaspa-mining-errors = { path = "/root/work/rusty-kaspa/mining/errors" }
+kaspa-muhash = { path = "/root/work/rusty-kaspa/crypto/muhash" }
+kaspa-notify = { path = "/root/work/rusty-kaspa/notify" }
+kaspa-p2p-flows = { path = "/root/work/rusty-kaspa/protocol/flows" }
+kaspa-p2p-lib = { path = "/root/work/rusty-kaspa/protocol/p2p" }
+kaspa-p2p-mining = { path = "/root/work/rusty-kaspa/protocol/mining" }
+kaspa-perf-monitor = { path = "/root/work/rusty-kaspa/metrics/perf_monitor" }
+kaspa-pow = { path = "/root/work/rusty-kaspa/consensus/pow" }
+kaspa-rpc-core = { path = "/root/work/rusty-kaspa/rpc/core" }
+kaspa-rpc-macros = { path = "/root/work/rusty-kaspa/rpc/macros" }
+kaspa-rpc-service = { path = "/root/work/rusty-kaspa/rpc/service" }
+kaspa-seq-commit = { path = "/root/work/rusty-kaspa/consensus/seq-commit" }
+kaspa-shielded-core = { path = "/root/work/rusty-kaspa/shielded-core" }
+kaspa-shielded-wallet = { path = "/root/work/rusty-kaspa/shielded-wallet" }
+kaspa-smt = { path = "/root/work/rusty-kaspa/crypto/smt" }
+kaspa-smt-store = { path = "/root/work/rusty-kaspa/consensus/smt-store" }
+kaspa-system-info = { path = "/root/work/rusty-kaspa/system-info" }
+kaspa-testing-integration = { path = "/root/work/rusty-kaspa/testing/integration" }
+kaspa-txscript = { path = "/root/work/rusty-kaspa/crypto/txscript" }
+kaspa-txscript-errors = { path = "/root/work/rusty-kaspa/crypto/txscript/errors" }
+kaspa-txscript-zk-sdk = { path = "/root/work/rusty-kaspa/crypto/txscript/zk-sdk" }
+kaspa-utils = { path = "/root/work/rusty-kaspa/utils" }
+kaspa-utils-tower = { path = "/root/work/rusty-kaspa/utils/tower" }
+kaspa-utxoindex = { path = "/root/work/rusty-kaspa/indexes/utxoindex" }
+kaspa-wallet = { path = "/root/work/rusty-kaspa/wallet/native" }
+kaspa-wallet-cli-wasm = { path = "/root/work/rusty-kaspa/wallet/wasm" }
+kaspa-wallet-core = { path = "/root/work/rusty-kaspa/wallet/core" }
+kaspa-wallet-keys = { path = "/root/work/rusty-kaspa/wallet/keys" }
+kaspa-wallet-macros = { path = "/root/work/rusty-kaspa/wallet/macros" }
+kaspa-wallet-pskt = { path = "/root/work/rusty-kaspa/wallet/pskt" }
+kaspa-wasm = { path = "/root/work/rusty-kaspa/wasm" }
+kaspa-wasm-core = { path = "/root/work/rusty-kaspa/wasm/core" }
+kaspa-wrpc-client = { path = "/root/work/rusty-kaspa/rpc/wrpc/client" }
+kaspa-wrpc-example-subscriber = { path = "/root/work/rusty-kaspa/rpc/wrpc/examples/subscriber" }
+kaspa-wrpc-proxy = { path = "/root/work/rusty-kaspa/rpc/wrpc/proxy" }
+kaspa-wrpc-server = { path = "/root/work/rusty-kaspa/rpc/wrpc/server" }
+kaspa-wrpc-wasm = { path = "/root/work/rusty-kaspa/rpc/wrpc/wasm" }
+kaspad = { path = "/root/work/rusty-kaspa/kaspad" }

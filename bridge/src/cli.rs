@@ -24,8 +24,8 @@ pub(crate) fn parse_bool(s: &str) -> Result<bool, anyhow::Error> {
     }
 }
 
-pub(crate) fn parse_instance_spec(spec: &str, default_min_share_diff: Option<u32>) -> Result<InstanceConfig, anyhow::Error> {
-    let mut instance = InstanceConfig { stratum_port: String::new(), min_share_diff: 0, ..InstanceConfig::default() };
+pub(crate) fn parse_instance_spec(spec: &str, default_min_share_diff: Option<f64>) -> Result<InstanceConfig, anyhow::Error> {
+    let mut instance = InstanceConfig { stratum_port: String::new(), min_share_diff: 0.0, ..InstanceConfig::default() };
 
     let mut has_port = false;
     let mut has_diff = false;
@@ -55,7 +55,7 @@ pub(crate) fn parse_instance_spec(spec: &str, default_min_share_diff: Option<u32
                 instance.prom_port = if normalized.is_empty() { None } else { Some(normalized) };
             }
             "diff" | "min_share_diff" => {
-                instance.min_share_diff = v.parse::<u32>().map_err(|e| anyhow::anyhow!("invalid min_share_diff '{v}': {e}"))?;
+                instance.min_share_diff = v.parse::<f64>().map_err(|e| anyhow::anyhow!("invalid min_share_diff '{v}': {e}"))?;
                 has_diff = true;
             }
             "wait" | "block_wait_time" => {
@@ -162,7 +162,7 @@ pub struct Cli {
     pub stratum_port: Option<String>,
 
     #[arg(long)]
-    pub min_share_diff: Option<u32>,
+    pub min_share_diff: Option<f64>,
 
     #[arg(long)]
     pub prom_port: Option<String>,

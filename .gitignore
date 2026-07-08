@@ -60,3 +60,4 @@ node_modules/
 # Design audit
 .design-audit/
 cutover-evidence/
+rust-toolchain.toml.orig

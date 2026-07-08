@@ -30,7 +30,7 @@ pub struct BridgeConfig {
     pub log_to_file: bool,
     pub health_check_port: String,
     pub block_wait_time: Duration,
-    pub min_share_diff: u32,
+    pub min_share_diff: f64,
     pub var_diff: bool,
     pub shares_per_min: u32,
     pub var_diff_stats: bool,
@@ -113,8 +113,8 @@ async fn listen_and_serve_impl<T: KaspaApiTrait + Send + Sync + 'static>(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Calculate min diff with pow2 clamp if needed. This is the default
     // seed used for any port without an explicit per-port seed.
-    let clamp_seed = |raw: u32| -> f64 {
-        let mut d = raw as f64;
+    let clamp_seed = |raw: f64| -> f64 {
+        let mut d = raw;
         if config.pow2_clamp && d > 0.0 {
             d = 2_f64.powi((d.log2().floor()) as i32);
         }
@@ -131,7 +131,7 @@ async fn listen_and_serve_impl<T: KaspaApiTrait + Send + Sync + 'static>(
         config.stratum_ports.iter().map(|(p, _)| p.clone()).collect()
     };
     let port_seeds: std::collections::HashMap<u16, f64> =
-        config.stratum_ports.iter().filter_map(|(p, seed)| parse_port_number(p).map(|n| (n, clamp_seed(*seed)))).collect();
+        config.stratum_ports.iter().filter_map(|(p, seed)| parse_port_number(p).map(|n| (n, clamp_seed(*seed as f64)))).collect();
 
     // Extranonce size is now auto-detected per client based on miner type
     // We still need to pass a value to ClientHandler::new() for backward compatibility,

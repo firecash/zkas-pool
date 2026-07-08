@@ -1608,8 +1608,8 @@ async fn update_config_from_json(json_body: &str) -> Result<(), Box<dyn std::err
     if let Some(port) = updates.get("stratum_port").and_then(|v| v.as_str()) {
         instance.stratum_port = crate::net_utils::normalize_port(port);
     }
-    if let Some(diff) = updates.get("min_share_diff").and_then(|v| v.as_u64()) {
-        instance.min_share_diff = diff as u32;
+    if let Some(diff) = updates.get("min_share_diff").and_then(|v| v.as_f64()) {
+        instance.min_share_diff = diff;
     }
     if let Some(port) = updates.get("prom_port").and_then(|v| v.as_str()) {
         let normalized = crate::net_utils::normalize_port(port);

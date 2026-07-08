@@ -9,7 +9,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub struct InstanceConfig {
     #[serde(deserialize_with = "deserialize_port")]
     pub stratum_port: String,
-    pub min_share_diff: u32,
+    // f64 so vardiff can drop the share difficulty below 1 on low-difficulty
+    // chains (FireCash's block target is far easier than a stratum diff of 1).
+    pub min_share_diff: f64,
     #[serde(default, deserialize_with = "deserialize_optional_port")]
     pub prom_port: Option<String>, // Optional per-instance prom port
     pub log_to_file: Option<bool>, // Optional per-instance logging
@@ -179,7 +181,7 @@ struct BridgeConfigRaw {
     #[serde(default, deserialize_with = "deserialize_optional_port")]
     stratum_port: Option<String>,
     #[serde(default)]
-    min_share_diff: Option<u32>,
+    min_share_diff: Option<f64>,
     #[serde(default, deserialize_with = "deserialize_optional_port")]
     prom_port: Option<String>,
 }
@@ -207,7 +209,7 @@ impl Default for InstanceConfig {
     fn default() -> Self {
         Self {
             stratum_port: ":5555".to_string(),
-            min_share_diff: 8192,
+            min_share_diff: 8192.0,
             prom_port: None,
             log_to_file: None,
             block_wait_time: None,
@@ -245,7 +247,7 @@ impl BridgeConfig {
                 if instance.stratum_port.is_empty() {
                     return Err(anyhow::anyhow!("Instance {} missing required 'stratum_port'", idx));
                 }
-                if instance.min_share_diff == 0 {
+                if instance.min_share_diff == 0.0 {
                     // Note: 0 is technically valid but unlikely, we'll allow it
                 }
             }

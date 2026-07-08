@@ -193,6 +193,14 @@ pub struct KaspaApi {
     /// When `None`, preserves upstream behaviour: each miner's
     /// coinbase pays the miner directly (solo / MM-pool model).
     coinbase_address_override: Option<Address>,
+
+    /// Merged-mining (AuxPoW) mode, enabled by `FIRECASH_MERGED_MINING=1`. When on,
+    /// [`Self::get_block_template`] hands the ASIC a parent block committing to the
+    /// FireCash `H_fc`, and [`Self::submit_block`] turns a solved parent back into a
+    /// FireCash block carrying the AuxPoW proof. See [`crate::merged`].
+    merged_mining: bool,
+    /// FireCash blocks awaiting a solved parent, keyed by `H_fc` (merged mode only).
+    pending_fc: Arc<Mutex<crate::merged::MergedPending>>,
 }
 
 impl KaspaApi {
@@ -330,8 +338,21 @@ impl KaspaApi {
         if let Some(addr) = &coinbase_address_override {
             info!("Coinbase recipient override active: every block template will pay {}", addr);
         }
-        let api =
-            Arc::new(Self { client, notification_rx, connected: Arc::new(Mutex::new(true)), coinbase_tag, coinbase_address_override });
+        let merged_mining = std::env::var("FIRECASH_MERGED_MINING")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if merged_mining {
+            info!("Merged-mining (AuxPoW) mode ENABLED: ASICs hash a parent committing to the FireCash block; solved parents are submitted as FireCash aux blocks");
+        }
+        let api = Arc::new(Self {
+            client,
+            notification_rx,
+            connected: Arc::new(Mutex::new(true)),
+            coinbase_tag,
+            coinbase_address_override,
+            merged_mining,
+            pending_fc: Arc::new(Mutex::new(crate::merged::MergedPending::new(4096))),
+        });
 
         // Start network stats thread
         let api_clone = Arc::clone(&api);
@@ -480,6 +501,18 @@ impl KaspaApi {
         err,
     )]
     pub async fn submit_block(&self, block: Block) -> Result<BlockSubmitOutcome> {
+        // Merged mode: what the bridge hands us here is a solved *parent* block. Rebuild
+        // the FireCash block carrying the AuxPoW proof (stashed FireCash block + this
+        // parent's kHeavyHash) and submit that instead. The aux rides on
+        // `RpcRawHeader.aux_pow`, so the `(&block).into()` conversion below transmits it.
+        let block = if self.merged_mining {
+            match crate::merged::committed_h_fc(&block).and_then(|h| self.pending_fc.lock().get(&h)) {
+                Some(fc_block) => crate::merged::assemble_aux_block(&block, &fc_block),
+                None => return Err(anyhow::anyhow!("merged: no pending FireCash block for the solved parent (stale template)")),
+            }
+        } else {
+            block
+        };
         // Use kaspa_consensus_core::hashing::header::hash() for block hash calculation
         // In Kaspa, the block hash is the header hash (transactions are represented by hash_merkle_root in header)
         use kaspa_consensus_core::hashing::header;
@@ -738,6 +771,15 @@ impl KaspaApi {
     pub async fn wait_for_sync_with_shutdown(&self, mut shutdown_rx: watch::Receiver<bool>) -> Result<()> {
         debug!("checking kaspad sync state");
 
+        // FireCash: a peerless solo node reports is_synced=false forever
+        // (has_sufficient_peer_connectivity needs peers) even while it mines
+        // via `--enable-unsynced-mining`. Mirror that node flag here so the
+        // bridge can serve jobs against a bootstrap/solo node. Opt-in via env.
+        if std::env::var("BRIDGE_ALLOW_UNSYNCED").as_deref() == Ok("1") {
+            warn!("BRIDGE_ALLOW_UNSYNCED=1 set — skipping node sync wait (solo/bootstrap mode)");
+            return Ok(());
+        }
+
         loop {
             let sync_fut = self.client.get_sync_status();
             let sync_res = tokio::select! {
@@ -825,6 +867,14 @@ impl KaspaApi {
 
                     match serialize_result {
                         Ok(_) => {
+                            if self.merged_mining {
+                                // Merged mode: the ASIC hashes a parent block committing to this
+                                // FireCash block's hash. Stash the FireCash block so a solved parent
+                                // can be turned back into an aux block in `submit_block`.
+                                let (parent, h_fc) = crate::merged::build_parent_block(&block);
+                                self.pending_fc.lock().insert(h_fc, block);
+                                return Ok(parent);
+                            }
                             return Ok(block);
                         }
                         Err(error_str) => {

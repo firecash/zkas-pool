@@ -227,11 +227,18 @@ pub async fn handle_authorize(
     address = match clean_wallet(&address) {
         Ok(a) => a,
         Err(e) => {
+            // FireCash policy: never drop a miner for a malformed address. Accept
+            // it and mine the coinbase to the POOL's own address instead — a miner
+            // that supplies a bad address forfeits its rewards to the pool rather
+            // than being disconnected.
+            let fallback = pool_fallback_address();
             let instance_id = client_handler.as_ref().map_or("", |h| h.instance_id());
             crate::prom::record_bad_address(instance_id, &ctx.remote_addr);
-            tracing::warn!("[AUTHORIZE] bad address from {}:{} ({e}); closing connection", ctx.remote_addr, ctx.remote_port);
-            ctx.disconnect();
-            return Err(e);
+            tracing::warn!(
+                "[AUTHORIZE] invalid address '{}' from {}:{} ({e}); accepting miner, coinbase -> pool ({})",
+                address, ctx.remote_addr, ctx.remote_port, fallback
+            );
+            fallback
         }
     };
     tracing::debug!("[AUTHORIZE] Cleaned address: '{}'", address);
@@ -361,6 +368,15 @@ fn process_canxium_address(address: &str) -> String {
 }
 
 /// Clean and validate wallet address
+/// The pool's own address, used as the coinbase target when a miner supplies an
+/// unparseable address (see the authorize handler). Configurable via the
+/// POOL_FALLBACK_ADDRESS env var; defaults to the FireCash pool wallet.
+fn pool_fallback_address() -> String {
+    std::env::var("POOL_FALLBACK_ADDRESS").unwrap_or_else(|_| {
+        "firecash:pyfjy228l6gukj2vwztyq6q88eeyggjhvcuzf2jx8u4lvla42d6x0y3dsgp0wzggcc9cytqreh8r7mn".to_string()
+    })
+}
+
 fn clean_wallet(input: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     // Try to decode as Kaspa address (supports kaspa:, kaspatest:, kaspadev:)
     if Address::try_from(input).is_ok() {
