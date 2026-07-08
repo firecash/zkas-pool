@@ -61,3 +61,4 @@ node_modules/
 .design-audit/
 cutover-evidence/
 rust-toolchain.toml.orig
+firecash-merged.yaml
