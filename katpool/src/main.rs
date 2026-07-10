@@ -724,7 +724,7 @@ async fn main() -> Result<()> {
         log_to_file: false,
         health_check_port: cfg.health_check_port.clone(),
         block_wait_time: Duration::from_millis(500),
-        min_share_diff: cfg.min_share_diff,
+        min_share_diff: cfg.min_share_diff as f64,
         var_diff: cfg.var_diff,
         shares_per_min: cfg.shares_per_min,
         var_diff_stats: false,
