@@ -22,6 +22,7 @@
 
 #![cfg_attr(not(test), warn(missing_docs))]
 
+pub mod claim;
 pub mod config;
 pub mod error;
 pub mod handlers;
