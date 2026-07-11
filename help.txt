@@ -212,7 +212,52 @@ This reference pool (fork of Nacho-the-Kat/katpool) ships an opt-in merged path:
 
 
 -------------------------------------------------------------------------------
- 8. SUMMARY FOR A POOL OPERATOR
+ 8. PAYOUT MODEL — VESTING, AUTO-SEND, AND EARLY CLAIM
+-------------------------------------------------------------------------------
+
+Because every coinbase reward is a SHIELDED note (no transparent UTXO a miner
+can be handed directly), the pool credits each matured reward to the miner's
+balance and later sends it from the pool's shielded treasury. How and when it
+leaves the pool is governed by a single 10-day cliff:
+
+  VESTING CLIFF = 10 days (accountant/src/vesting.rs: VESTING_CLIFF_DAYS).
+
+  Each individual reward vests on its own age since it matured:
+
+    - AGE >= 10 days  ->  pays 100%  (FULL_PAYOUT_BPS  = 10000)
+    - AGE <  10 days  ->  pays  50%  (EARLY_PAYOUT_BPS =  5000)
+
+  The split steps at the cliff (no linear ramp). Arithmetic is integer sompi
+  with an i128 intermediate, so miner + forfeit == gross exactly — the split
+  can never create or destroy value.
+
+TWO WAYS MONEY LEAVES THE POOL (accountant/src/payout.rs: PayoutTrigger):
+
+  (1) AUTO-SEND  (PayoutTrigger::AutoSweep)  — the default, no action needed.
+      A scheduled sweep picks up every reward that has passed the 10-day cliff
+      and sends it to the miner's firecash: address at 100%. NO SIGNATURE is
+      required: the funds are fully vested and go to the address the miner
+      already mined to. Rewards still inside the cliff are left to keep vesting
+      and are picked up by a later sweep once they mature.
+
+  (2) EARLY CLAIM (PayoutTrigger::SignedClaim) — optional, miner-initiated.
+      A miner who wants their balance BEFORE the cliff signs a one-time,
+      address-bound challenge with their shielded key (api/src/claim.rs). This
+      pays everything now: matured rewards at 100% and still-vesting rewards at
+      50%. The 50% haircut is the price of early liquidity; the withheld half is
+      routed per ForfeitPolicy (default: pool treasury).
+
+  In one line: SIGNING IS ONLY EVER NEEDED TO CLAIM EARLY (before 10 days). After
+  10 days a reward auto-sends at full value with nothing for the miner to do. A
+  signature is a miner's choice to trade 50% for speed — never a requirement to
+  eventually get paid.
+
+  Note: a fully-matured reward pays 100% on BOTH paths, so there is never a
+  reason to sign for money you can get free at full value on the next sweep.
+
+
+-------------------------------------------------------------------------------
+ 9. SUMMARY FOR A POOL OPERATOR
 -------------------------------------------------------------------------------
 
   - Want to mine FireCash today?  Run a FireCash node + your Kaspa-style bridge.

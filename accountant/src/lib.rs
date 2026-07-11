@@ -64,6 +64,7 @@ pub mod geoip;
 pub mod kaspad_grpc;
 pub mod maturity;
 pub mod metrics;
+pub mod payout;
 pub mod replay;
 pub mod tier;
 pub mod tier_kasplex;
@@ -77,6 +78,9 @@ pub use config::{
 };
 pub use consumer::{ConsumerConfig, ConsumerConfigError, EventConsumer, VALID_NETWORKS};
 pub use error::{AccountantError, EventError};
+pub use payout::{
+    has_auto_payable, plan_payout, time_until_auto_payout, PayoutPlan, PayoutTrigger,
+};
 pub use vesting::{
     ClaimTotals, EARLY_PAYOUT_BPS, FULL_PAYOUT_BPS, ForfeitPolicy, VESTING_CLIFF,
     VESTING_CLIFF_DAYS, VestedSplit, vest_claim, vest_reward,
