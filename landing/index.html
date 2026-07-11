@@ -136,14 +136,22 @@
       <div class="stat"><div class="v">0%</div><div class="l">Pool fee</div></div>
       <div class="stat"><div class="v">60 $firecash</div><div class="l">Block reward</div></div>
     </div>
-    <p class="empty" style="margin:14px 2px 0">For privacy, FireCash's pool shows only aggregate stats — no per-miner or top-miner rankings. Check your own worker stats by address below.</p>
+  </div>
+
+  <!-- WORKERS -->
+  <div class="card">
+    <h2>Workers</h2>
+    <table><thead><tr><th>Worker</th><th>Address</th><th>Hashrate</th><th>Shares</th></tr></thead>
+      <tbody id="workersBody"><tr><td colspan="4" class="empty">No workers connected yet.</td></tr></tbody>
+    </table>
+    <p class="empty" style="margin:12px 2px 0">Hashrate and shares are public, but every address is <b>masked</b> — you can see the pool's distribution without learning who owns what. Look up your own full stats by address above.</p>
   </div>
 
   <!-- BLOCKS -->
   <div class="card">
     <h2>Recent blocks</h2>
-    <table><thead><tr><th>Time</th><th>Block hash</th></tr></thead>
-      <tbody id="blocksBody"><tr><td colspan="2" class="empty">No blocks found yet.</td></tr></tbody>
+    <table><thead><tr><th>Time</th><th>Worker</th><th>Address</th><th>Block hash</th></tr></thead>
+      <tbody id="blocksBody"><tr><td colspan="4" class="empty">No blocks found yet.</td></tr></tbody>
     </table>
   </div>
 
@@ -181,12 +189,25 @@
       $('stHeight').textContent = (s.networkBlockCount??0).toLocaleString();
       $('stNet').textContent    = fmtHash(s.networkHashrate);  // already H/s
 
+      // Workers: hashrate + shares public, address already masked by the redactor.
+      const wb=$('workersBody');
+      const ws=(s.workers||[]).slice().sort((a,b)=>(b.hashrate||0)-(a.hashrate||0));
+      if(ws.length){
+        wb.innerHTML = ws.map(w=>`<tr>
+          <td>${w.worker||'—'}</td>
+          <td class="mono">${w.wallet||'—'}</td>
+          <td>${fmtHash((w.hashrate||0)*1e9)}</td>
+          <td>${(w.shares||0).toLocaleString()}</td></tr>`).join('');
+      } else { wb.innerHTML='<tr><td colspan="4" class="empty">No workers connected yet.</td></tr>'; }
+
       const bb=$('blocksBody');
       if((s.blocks||[]).length){
         bb.innerHTML = s.blocks.slice(0,12).map(b=>`<tr>
           <td>${ago(b.timestamp)}</td>
+          <td>${b.worker||'—'}</td>
+          <td class="mono">${b.wallet||'—'}</td>
           <td class="mono">${shortHash(b.hash)}</td></tr>`).join('');
-      } else { bb.innerHTML='<tr><td colspan="2" class="empty">No blocks found yet.</td></tr>'; }
+      } else { bb.innerHTML='<tr><td colspan="4" class="empty">No blocks found yet.</td></tr>'; }
     }catch{
       $('dot').classList.remove('on'); $('statusText').textContent='pool status unavailable';
     }

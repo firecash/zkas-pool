@@ -56,10 +56,10 @@ def blocks_by_wallet():
 
 
 def redact(stats, bbw):
-    """Public pool feed — AGGREGATE ONLY. On a shielded chain, per-miner/top-miner
-    stats are a privacy leak even with masked addresses (they rank who mines how
-    much), so this exposes no per-worker rows and no block attribution. A miner sees
-    their OWN stats via /api/miner (self-lookup by exact address; no enumeration)."""
+    """Public pool feed. Per-worker hashrate + shares stay visible (operators want
+    the live worker view), but every wallet ADDRESS is masked to a censored form —
+    so you can see the distribution of hashrate without learning who owns it. A miner
+    sees their OWN full stats via /api/miner (self-lookup by exact address)."""
     workers = stats.get("workers") or []
     pool_hashrate_hs = sum((w.get("hashrate") or 0) for w in workers) * 1e9  # GH/s -> H/s
     return {
@@ -72,9 +72,20 @@ def redact(stats, bbw):
         "blocksAccepted": sum(v["found"] for v in bbw.values()),
         "totalShares": stats.get("totalShares"),
         "bridgeUptime": stats.get("bridgeUptime"),
-        # Recent blocks carry NO wallet/worker attribution.
-        "blocks": [{"hash": b.get("hash"), "timestamp": b.get("timestamp")}
-                   for b in (stats.get("blocks") or [])[:20]],
+        # Per-worker rows: hashrate + shares kept; ADDRESS masked.
+        "workers": [{
+            "worker": w.get("worker") or "—",
+            "wallet": mask_addr(w.get("wallet")),
+            "hashrate": w.get("hashrate"),
+            "shares": w.get("shares"),
+        } for w in workers],
+        # Recent blocks: hash + time + worker label; ADDRESS masked.
+        "blocks": [{
+            "worker": b.get("worker") or "—",
+            "wallet": mask_addr(b.get("wallet")),
+            "hash": b.get("hash"),
+            "timestamp": b.get("timestamp"),
+        } for b in (stats.get("blocks") or [])[:20]],
     }
 
 
