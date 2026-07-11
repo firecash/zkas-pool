@@ -185,67 +185,67 @@ missing_panics_doc = "allow"
 # so patching every kaspa-* crate makes the pool natively FireCash-aware and keeps a
 # single copy of each crate (no upstream/fork duplication in the dep graph).
 [patch."https://github.com/kaspanet/rusty-kaspa"]
-kaspa-addresses = { path = "/root/work/rusty-kaspa/crypto/addresses" }
-kaspa-addressmanager = { path = "/root/work/rusty-kaspa/components/addressmanager" }
-kaspa-alloc = { path = "/root/work/rusty-kaspa/utils/alloc" }
-kaspa-bip32 = { path = "/root/work/rusty-kaspa/wallet/bip32" }
-kaspa-build-info = { path = "/root/work/rusty-kaspa/build-info" }
-kaspa-cli = { path = "/root/work/rusty-kaspa/cli" }
-kaspa-connectionmanager = { path = "/root/work/rusty-kaspa/components/connectionmanager" }
-kaspa-consensus = { path = "/root/work/rusty-kaspa/consensus" }
-kaspa-consensus-client = { path = "/root/work/rusty-kaspa/consensus/client" }
-kaspa-consensus-core = { path = "/root/work/rusty-kaspa/consensus/core" }
-kaspa-consensus-notify = { path = "/root/work/rusty-kaspa/consensus/notify" }
-kaspa-consensus-wasm = { path = "/root/work/rusty-kaspa/consensus/wasm" }
-kaspa-consensusmanager = { path = "/root/work/rusty-kaspa/components/consensusmanager" }
-kaspa-core = { path = "/root/work/rusty-kaspa/core" }
-kaspa-daemon = { path = "/root/work/rusty-kaspa/daemon" }
-kaspa-database = { path = "/root/work/rusty-kaspa/database" }
-kaspa-grpc-client = { path = "/root/work/rusty-kaspa/rpc/grpc/client" }
-kaspa-grpc-core = { path = "/root/work/rusty-kaspa/rpc/grpc/core" }
-kaspa-grpc-server = { path = "/root/work/rusty-kaspa/rpc/grpc/server" }
-kaspa-hashes = { path = "/root/work/rusty-kaspa/crypto/hashes" }
-kaspa-index-core = { path = "/root/work/rusty-kaspa/indexes/core" }
-kaspa-index-processor = { path = "/root/work/rusty-kaspa/indexes/processor" }
-kaspa-math = { path = "/root/work/rusty-kaspa/math" }
-kaspa-merkle = { path = "/root/work/rusty-kaspa/crypto/merkle" }
-kaspa-metrics-core = { path = "/root/work/rusty-kaspa/metrics/core" }
-kaspa-mining = { path = "/root/work/rusty-kaspa/mining" }
-kaspa-mining-errors = { path = "/root/work/rusty-kaspa/mining/errors" }
-kaspa-muhash = { path = "/root/work/rusty-kaspa/crypto/muhash" }
-kaspa-notify = { path = "/root/work/rusty-kaspa/notify" }
-kaspa-p2p-flows = { path = "/root/work/rusty-kaspa/protocol/flows" }
-kaspa-p2p-lib = { path = "/root/work/rusty-kaspa/protocol/p2p" }
-kaspa-p2p-mining = { path = "/root/work/rusty-kaspa/protocol/mining" }
-kaspa-perf-monitor = { path = "/root/work/rusty-kaspa/metrics/perf_monitor" }
-kaspa-pow = { path = "/root/work/rusty-kaspa/consensus/pow" }
-kaspa-rpc-core = { path = "/root/work/rusty-kaspa/rpc/core" }
-kaspa-rpc-macros = { path = "/root/work/rusty-kaspa/rpc/macros" }
-kaspa-rpc-service = { path = "/root/work/rusty-kaspa/rpc/service" }
-kaspa-seq-commit = { path = "/root/work/rusty-kaspa/consensus/seq-commit" }
-kaspa-shielded-core = { path = "/root/work/rusty-kaspa/shielded-core" }
-kaspa-shielded-wallet = { path = "/root/work/rusty-kaspa/shielded-wallet" }
-kaspa-smt = { path = "/root/work/rusty-kaspa/crypto/smt" }
-kaspa-smt-store = { path = "/root/work/rusty-kaspa/consensus/smt-store" }
-kaspa-system-info = { path = "/root/work/rusty-kaspa/system-info" }
-kaspa-testing-integration = { path = "/root/work/rusty-kaspa/testing/integration" }
-kaspa-txscript = { path = "/root/work/rusty-kaspa/crypto/txscript" }
-kaspa-txscript-errors = { path = "/root/work/rusty-kaspa/crypto/txscript/errors" }
-kaspa-txscript-zk-sdk = { path = "/root/work/rusty-kaspa/crypto/txscript/zk-sdk" }
-kaspa-utils = { path = "/root/work/rusty-kaspa/utils" }
-kaspa-utils-tower = { path = "/root/work/rusty-kaspa/utils/tower" }
-kaspa-utxoindex = { path = "/root/work/rusty-kaspa/indexes/utxoindex" }
-kaspa-wallet = { path = "/root/work/rusty-kaspa/wallet/native" }
-kaspa-wallet-cli-wasm = { path = "/root/work/rusty-kaspa/wallet/wasm" }
-kaspa-wallet-core = { path = "/root/work/rusty-kaspa/wallet/core" }
-kaspa-wallet-keys = { path = "/root/work/rusty-kaspa/wallet/keys" }
-kaspa-wallet-macros = { path = "/root/work/rusty-kaspa/wallet/macros" }
-kaspa-wallet-pskt = { path = "/root/work/rusty-kaspa/wallet/pskt" }
-kaspa-wasm = { path = "/root/work/rusty-kaspa/wasm" }
-kaspa-wasm-core = { path = "/root/work/rusty-kaspa/wasm/core" }
-kaspa-wrpc-client = { path = "/root/work/rusty-kaspa/rpc/wrpc/client" }
-kaspa-wrpc-example-subscriber = { path = "/root/work/rusty-kaspa/rpc/wrpc/examples/subscriber" }
-kaspa-wrpc-proxy = { path = "/root/work/rusty-kaspa/rpc/wrpc/proxy" }
-kaspa-wrpc-server = { path = "/root/work/rusty-kaspa/rpc/wrpc/server" }
-kaspa-wrpc-wasm = { path = "/root/work/rusty-kaspa/rpc/wrpc/wasm" }
-kaspad = { path = "/root/work/rusty-kaspa/kaspad" }
+kaspa-addresses = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-addressmanager = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-alloc = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-bip32 = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-build-info = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-cli = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-connectionmanager = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-consensus = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-consensus-client = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-consensus-core = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-consensus-notify = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-consensus-wasm = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-consensusmanager = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-core = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-daemon = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-database = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-grpc-client = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-grpc-core = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-grpc-server = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-hashes = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-index-core = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-index-processor = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-math = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-merkle = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-metrics-core = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-mining = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-mining-errors = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-muhash = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-notify = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-p2p-flows = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-p2p-lib = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-p2p-mining = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-perf-monitor = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-pow = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-rpc-core = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-rpc-macros = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-rpc-service = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-seq-commit = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-shielded-core = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-shielded-wallet = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-smt = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-smt-store = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-system-info = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-testing-integration = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-txscript = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-txscript-errors = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-txscript-zk-sdk = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-utils = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-utils-tower = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-utxoindex = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-wallet = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-wallet-cli-wasm = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-wallet-core = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-wallet-keys = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-wallet-macros = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-wallet-pskt = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-wasm = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-wasm-core = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-wrpc-client = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-wrpc-example-subscriber = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-wrpc-proxy = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-wrpc-server = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspa-wrpc-wasm = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }
+kaspad = { git = "https://github.com/firecash/firecash-rusty", branch = "main" }

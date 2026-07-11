@@ -72,6 +72,10 @@ Prerequisites: Rust 1.91+ / edition 2024 (pinned via `rust-version` in
 [`Cargo.toml`](Cargo.toml)), Docker (for ephemeral test databases), and
 `cargo-deny` / `cargo-audit`.
 
+The patched `kaspa-*` / FireCash crates are pulled straight from the
+[`firecash-rusty`](https://github.com/firecash/firecash-rusty) fork over git — you do
+**not** need a local rusty-kaspa checkout at any particular path (Cargo fetches and pins it).
+
 ```bash
 git clone https://github.com/firecash/firecash-pool.git
 cd firecash-pool
