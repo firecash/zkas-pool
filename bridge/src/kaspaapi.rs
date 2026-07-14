@@ -194,23 +194,35 @@ pub struct KaspaApi {
     /// coinbase pays the miner directly (solo / MM-pool model).
     coinbase_address_override: Option<Address>,
 
-    /// Merged-mining (AuxPoW) mode, enabled by `FIRECASH_MERGED_MINING=1`. When on,
+    /// Merged-mining (AuxPoW) mode, enabled by `ZKAS_MERGED_MINING=1` (legacy `FIRECASH_MERGED_MINING` honored). When on,
     /// [`Self::get_block_template`] hands the ASIC a parent block committing to the
-    /// FireCash `H_fc`, and [`Self::submit_block`] turns a solved parent back into a
-    /// FireCash block carrying the AuxPoW proof. See [`crate::merged`].
+    /// ZKas `H_fc`, and [`Self::submit_block`] turns a solved parent back into a
+    /// ZKas block carrying the AuxPoW proof. See [`crate::merged`].
     merged_mining: bool,
-    /// FireCash blocks awaiting a solved parent, keyed by `H_fc` (merged mode only).
+    /// ZKas blocks awaiting a solved parent, keyed by `H_fc` (merged mode only).
     pending_fc: Arc<Mutex<crate::merged::MergedPending>>,
 
     /// Real dual-chain merged mining: gRPC client to the upstream **Kaspa** node that
     /// supplies the parent block template and receives Kaspa-target-clearing blocks
-    /// (the KAS reward path). `None` ⇒ synthetic-parent merged mode (FireCash aux
-    /// blocks only, no KAS). Set from `FIRECASH_KASPA_NODE`.
+    /// (the KAS reward path). `None` ⇒ synthetic-parent merged mode (ZKas aux
+    /// blocks only, no KAS). Set from `ZKAS_KASPA_NODE` (or legacy `FIRECASH_KASPA_NODE`).
     kaspa_client: Option<Arc<GrpcClient>>,
     /// The `kaspa:` address each real parent's coinbase pays. Set from
-    /// `FIRECASH_KASPA_PAY`.
+    /// `ZKAS_KASPA_PAY` (or legacy `FIRECASH_KASPA_PAY`).
     kaspa_pay: Option<Address>,
+    /// Coalescing cache for the Kaspa parent template: `(h_fc, parent, fetched_at)`.
+    /// Without this, every worker's `get_block_template` fetched its own parent on the
+    /// single shared gRPC client — ~100 workers stampeding it, so most fetches failed
+    /// and fell back to the (KAS-worthless) synthetic parent. All workers sharing the
+    /// current FC template also share its `h_fc`, so one fetch per refresh window serves
+    /// the whole fleet with a REAL, fresh parent.
+    kaspa_parent_cache: Arc<tokio::sync::Mutex<Option<(kaspa_hashes::Hash, Block, Instant)>>>,
 }
+
+/// How long a cached Kaspa parent is reused before refetching. Kaspa makes a tip
+/// ~every 100ms; 150ms keeps the parent fresh (low `BlockInvalid`) while collapsing the
+/// per-worker fetch storm into ~one call per window.
+const KASPA_PARENT_TTL: Duration = Duration::from_millis(150);
 
 impl KaspaApi {
     /// Create a new Kaspa API client.
@@ -347,22 +359,23 @@ impl KaspaApi {
         if let Some(addr) = &coinbase_address_override {
             info!("Coinbase recipient override active: every block template will pay {}", addr);
         }
-        let merged_mining = std::env::var("FIRECASH_MERGED_MINING")
+        let merged_mining = std::env::var("ZKAS_MERGED_MINING")
+            .or_else(|_| std::env::var("FIRECASH_MERGED_MINING"))
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
         if merged_mining {
-            info!("Merged-mining (AuxPoW) mode ENABLED: ASICs hash a parent committing to the FireCash block; solved parents are submitted as FireCash aux blocks");
+            info!("Merged-mining (AuxPoW) mode ENABLED: ASICs hash a parent committing to the ZKas block; solved parents are submitted as ZKas aux blocks");
         }
 
         // Real dual-chain: connect to the upstream Kaspa node so the *same* solved
-        // parent that yields a FireCash aux block also earns KAS when it clears the
+        // parent that yields a ZKas aux block also earns KAS when it clears the
         // (harder) Kaspa target. Best-effort: if unset or unreachable, merged mining
-        // degrades to FireCash-aux-only rather than failing to start.
+        // degrades to ZKas-aux-only rather than failing to start.
         let (kaspa_client, kaspa_pay) = if merged_mining {
-            let node = std::env::var("FIRECASH_KASPA_NODE").unwrap_or_default();
-            let pay = std::env::var("FIRECASH_KASPA_PAY").unwrap_or_default();
+            let node = std::env::var("ZKAS_KASPA_NODE").or_else(|_| std::env::var("FIRECASH_KASPA_NODE")).unwrap_or_default();
+            let pay = std::env::var("ZKAS_KASPA_PAY").or_else(|_| std::env::var("FIRECASH_KASPA_PAY")).unwrap_or_default();
             if node.is_empty() || pay.is_empty() {
-                info!("Real merged mining disabled (set FIRECASH_KASPA_NODE + FIRECASH_KASPA_PAY to also earn KAS); running FireCash-aux-only");
+                info!("Real merged mining disabled (set ZKAS_KASPA_NODE + ZKAS_KASPA_PAY to also earn KAS); running ZKas-aux-only");
                 (None, None)
             } else {
                 let grpc = if node.starts_with("grpc://") { node.clone() } else { format!("grpc://{node}") };
@@ -373,12 +386,12 @@ impl KaspaApi {
                             (Some(Arc::new(kc)), Some(addr))
                         }
                         Err(e) => {
-                            warn!("FIRECASH_KASPA_PAY is not a valid kaspa: address ({e}); running FireCash-aux-only");
+                            warn!("ZKAS_KASPA_PAY is not a valid kaspa: address ({e}); running ZKas-aux-only");
                             (None, None)
                         }
                     },
                     Err(e) => {
-                        warn!("could not connect to Kaspa node {node} ({e}); running FireCash-aux-only");
+                        warn!("could not connect to Kaspa node {node} ({e}); running ZKas-aux-only");
                         (None, None)
                     }
                 }
@@ -397,6 +410,7 @@ impl KaspaApi {
             pending_fc: Arc::new(Mutex::new(crate::merged::MergedPending::new(4096))),
             kaspa_client,
             kaspa_pay,
+            kaspa_parent_cache: Arc::new(tokio::sync::Mutex::new(None)),
         });
 
         // Start network stats thread
@@ -518,23 +532,35 @@ impl KaspaApi {
     /// Fetch a real Kaspa block template from the upstream node, paying our `kaspa:`
     /// address and embedding `FCMM || h_fc` in the coinbase `extra_data`, so a solved
     /// parent is a valid Kaspa block that both (a) can be submitted to Kaspa for KAS and
-    /// (b) proves the FireCash block via AuxPoW. Errs if the Kaspa client/pay address is
+    /// (b) proves the ZKas block via AuxPoW. Errs if the Kaspa client/pay address is
     /// unset (caller falls back to a synthetic parent).
     async fn fetch_kaspa_parent(&self, h_fc: kaspa_hashes::Hash) -> Result<Block> {
         let kc = self.kaspa_client.as_ref().ok_or_else(|| anyhow::anyhow!("no Kaspa node client"))?;
         let pay = self.kaspa_pay.clone().ok_or_else(|| anyhow::anyhow!("no Kaspa pay address"))?;
+
+        // Coalesce: hold the cache lock so concurrent workers don't stampede the single
+        // gRPC client. A fresh cached parent committing to the same h_fc is reused; only
+        // one worker per TTL actually calls the node.
+        let mut cache = self.kaspa_parent_cache.lock().await;
+        if let Some((ch, parent, at)) = cache.as_ref() {
+            if *ch == h_fc && at.elapsed() < KASPA_PARENT_TTL {
+                return Ok(parent.clone());
+            }
+        }
         let extra_data = kaspa_consensus_core::auxpow::AuxPow::embed_commitment(&[], h_fc, &[]);
         let resp = kc
             .get_block_template_call(None, GetBlockTemplateRequest::new(pay, extra_data))
             .await
             .context("kaspa getBlockTemplate")?;
-        Block::try_from(resp.block).map_err(|e| anyhow::anyhow!("kaspa block conversion: {e:?}"))
+        let parent = Block::try_from(resp.block).map_err(|e| anyhow::anyhow!("kaspa block conversion: {e:?}"))?;
+        *cache = Some((h_fc, parent.clone(), Instant::now()));
+        Ok(parent)
     }
 
     /// In real merged mining the parent carries the *Kaspa* target (`header.bits`), but
-    /// FireCash aux blocks should be found at the FireCash (easier) cadence. This returns
-    /// the FireCash target for a given parent (looked up via its committed `H_fc` → the
-    /// stashed FireCash block's own `bits`), which the share handler uses as the
+    /// ZKas aux blocks should be found at the ZKas (easier) cadence. This returns
+    /// the ZKas target for a given parent (looked up via its committed `H_fc` → the
+    /// stashed ZKas block's own `bits`), which the share handler uses as the
     /// block-found threshold in merged mode. `None` ⇒ not merged / unknown parent ⇒
     /// caller uses the parent's own `bits`.
     pub fn merged_fc_target(&self, parent_block: &Block) -> Option<num_bigint::BigUint> {
@@ -578,15 +604,15 @@ impl KaspaApi {
     )]
     pub async fn submit_block(&self, block: Block) -> Result<BlockSubmitOutcome> {
         // Merged mode: what the bridge hands us here is a solved *parent* block. Rebuild
-        // the FireCash block carrying the AuxPoW proof (stashed FireCash block + this
+        // the ZKas block carrying the AuxPoW proof (stashed ZKas block + this
         // parent's kHeavyHash) and submit that instead. The aux rides on
         // `RpcRawHeader.aux_pow`, so the `(&block).into()` conversion below transmits it.
         let block = if self.merged_mining {
             // The raw solved `block` is the real Kaspa parent. If its kHeavyHash clears
             // the (harder) Kaspa target, submit it to the Kaspa node for the KAS reward —
-            // the very same nonce also proves the FireCash aux block assembled below, so
+            // the very same nonce also proves the ZKas aux block assembled below, so
             // one unit of work pays both chains. Kaspa submission is best-effort: a reject
-            // (stale tip race) or missing Kaspa client never blocks the FireCash aux path.
+            // (stale tip race) or missing Kaspa client never blocks the ZKas aux path.
             if let Some(kc) = &self.kaspa_client {
                 let (clears_kaspa, _) = kaspa_pow::State::new(&block.header).check_pow(block.header.nonce);
                 if clears_kaspa {
@@ -605,10 +631,10 @@ impl KaspaApi {
                     }
                 }
             }
-            // Assemble the FireCash block carrying the AuxPoW proof from the same parent.
+            // Assemble the ZKas block carrying the AuxPoW proof from the same parent.
             match crate::merged::committed_h_fc(&block).and_then(|h| self.pending_fc.lock().get(&h)) {
                 Some(fc_block) => crate::merged::assemble_aux_block(&block, &fc_block),
-                None => return Err(anyhow::anyhow!("merged: no pending FireCash block for the solved parent (stale template)")),
+                None => return Err(anyhow::anyhow!("merged: no pending ZKas block for the solved parent (stale template)")),
             }
         } else {
             block
@@ -871,7 +897,7 @@ impl KaspaApi {
     pub async fn wait_for_sync_with_shutdown(&self, mut shutdown_rx: watch::Receiver<bool>) -> Result<()> {
         debug!("checking kaspad sync state");
 
-        // FireCash: a peerless solo node reports is_synced=false forever
+        // ZKas: a peerless solo node reports is_synced=false forever
         // (has_sufficient_peer_connectivity needs peers) even while it mines
         // via `--enable-unsynced-mining`. Mirror that node flag here so the
         // bridge can serve jobs against a bootstrap/solo node. Opt-in via env.
@@ -969,14 +995,14 @@ impl KaspaApi {
                         Ok(_) => {
                             if self.merged_mining {
                                 // Merged mode: the ASIC hashes a *parent* block committing to this
-                                // FireCash block's hash. Stash the FireCash block so a solved parent
+                                // ZKas block's hash. Stash the ZKas block so a solved parent
                                 // can be turned back into an aux block in `submit_block`.
                                 let h_fc = block.header.hash;
                                 let parent = match self.fetch_kaspa_parent(h_fc).await {
                                     // Real dual-chain: a genuine Kaspa block whose coinbase commits to
                                     // H_fc — clearing its (hard) target also earns KAS.
                                     Ok(p) => p,
-                                    // No/failed Kaspa node: fall back to a synthetic parent so FireCash
+                                    // No/failed Kaspa node: fall back to a synthetic parent so ZKas
                                     // aux blocks keep flowing (no KAS, but the chain stays live).
                                     Err(e) => {
                                         if self.kaspa_client.is_some() {

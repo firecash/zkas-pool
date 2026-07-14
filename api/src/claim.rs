@@ -1,6 +1,6 @@
 //! Signature-authenticated payout **claims**.
 //!
-//! A miner's pool balance is custodial until claimed. Because FireCash addresses
+//! A miner's pool balance is custodial until claimed. Because ZKas addresses
 //! are shielded, a claim is authenticated by a **shielded signature**, not a
 //! password: the miner proves control of their payout address by signing a
 //! server-issued, single-use **challenge** with their Orchard spend key. There is

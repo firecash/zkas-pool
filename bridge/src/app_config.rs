@@ -10,7 +10,7 @@ pub struct InstanceConfig {
     #[serde(deserialize_with = "deserialize_port")]
     pub stratum_port: String,
     // f64 so vardiff can drop the share difficulty below 1 on low-difficulty
-    // chains (FireCash's block target is far easier than a stratum diff of 1).
+    // chains (ZKas's block target is far easier than a stratum diff of 1).
     pub min_share_diff: f64,
     #[serde(default, deserialize_with = "deserialize_optional_port")]
     pub prom_port: Option<String>, // Optional per-instance prom port
@@ -33,11 +33,11 @@ pub struct GlobalConfig {
     /// Merged mining (real dual-chain): gRPC address of the upstream **Kaspa** node
     /// that supplies the parent block template and receives Kaspa-target-clearing
     /// blocks. Empty disables real merged mining. Overridable via
-    /// `FIRECASH_KASPA_NODE`.
+    /// `ZKAS_KASPA_NODE`.
     #[serde(default)]
     pub merged_kaspa_address: String,
     /// The `kaspa:` address every merged parent's coinbase pays (the KAS reward
-    /// recipient). Overridable via `FIRECASH_KASPA_PAY`.
+    /// recipient). Overridable via `ZKAS_KASPA_PAY`.
     #[serde(default)]
     pub merged_kaspa_pay_address: String,
     #[serde(deserialize_with = "deserialize_duration_ms", serialize_with = "serialize_duration_ms")]

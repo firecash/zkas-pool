@@ -124,13 +124,23 @@ impl ClientHandler {
         use std::sync::atomic::Ordering;
 
         // Detect miner type and determine required extranonce size
-        // Bitmain (GodMiner) requires extranonce_size = 0 (no extranonce)
-        // IceRiver, BzMiner, Goldshell require extranonce_size = 2
+        // IceRiver, BzMiner, Goldshell take a 2-byte extranonce (via set_extranonce).
+        // Bitmain (GodMiner) historically got size 0 — but with no extranonce every
+        // connection of a GodMiner farm grinds the SAME nonce space (papa's farm produced
+        // ~300 duplicate blocks/hour = provably overlapping search = wasted hashrate).
+        // We now give Bitmain a 2-byte extranonce too, delivered in the subscribe
+        // response ([null, extranonce, extranonce2_size]); share validation already
+        // accepts both full and extranonce2-only nonce submissions.
+        // Kill switch: ZKAS_BITMAIN_EXTRANONCE=0 (legacy FIRECASH_ name honored) restores the old size-0 behavior.
         let remote_app_lower = remote_app.to_lowercase();
         let is_bitmain =
             remote_app_lower.contains("godminer") || remote_app_lower.contains("bitmain") || remote_app_lower.contains("antminer");
+        let bitmain_extranonce_enabled = std::env::var("ZKAS_BITMAIN_EXTRANONCE")
+            .or_else(|_| std::env::var("FIRECASH_BITMAIN_EXTRANONCE"))
+            .map(|v| v != "0")
+            .unwrap_or(true);
 
-        let required_extranonce_size = if is_bitmain { 0 } else { 2 };
+        let required_extranonce_size = if is_bitmain && !bitmain_extranonce_enabled { 0 } else { 2 };
 
         let extranonce = if required_extranonce_size > 0 {
             // Calculate max extranonce for size 2

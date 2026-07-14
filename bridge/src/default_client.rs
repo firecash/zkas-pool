@@ -227,7 +227,7 @@ pub async fn handle_authorize(
     address = match clean_wallet(&address) {
         Ok(a) => a,
         Err(e) => {
-            // FireCash policy: never drop a miner for a malformed address. Accept
+            // ZKas policy: never drop a miner for a malformed address. Accept
             // it and mine the coinbase to the POOL's own address instead — a miner
             // that supplies a bad address forfeits its rewards to the pool rather
             // than being disconnected.
@@ -299,13 +299,20 @@ pub async fn handle_authorize(
     // 4. job
 
     let extranonce = ctx.extranonce.lock().clone();
-    if !extranonce.is_empty() {
+    // Bitmain/GodMiner receives its extranonce inside the subscribe response
+    // ([null, extranonce, extranonce2_size]); an additional set_extranonce
+    // notification is outside its protocol and could confuse the firmware.
+    let remote_app_lower = ctx.remote_app.lock().to_lowercase();
+    let is_bitmain = remote_app_lower.contains("godminer")
+        || remote_app_lower.contains("bitmain")
+        || remote_app_lower.contains("antminer");
+    if !extranonce.is_empty() && !is_bitmain {
         tracing::debug!("[AUTHORIZE] Step 2: Sending extranonce to client {} before difficulty/job", ctx.remote_addr);
         tracing::debug!("[AUTHORIZE] Extranonce value: '{}'", extranonce);
         send_extranonce(ctx.clone()).await?;
         tracing::debug!("[AUTHORIZE] Extranonce sent successfully to client {}", ctx.remote_addr);
     } else {
-        tracing::debug!("[AUTHORIZE] No extranonce configured (extranonce_size=0), skipping extranonce step");
+        tracing::debug!("[AUTHORIZE] No extranonce step (empty or bitmain; bitmain gets it via subscribe response)");
     }
 
     let wallet_addr = ctx.wallet_addr.lock().clone();
@@ -370,7 +377,7 @@ fn process_canxium_address(address: &str) -> String {
 /// Clean and validate wallet address
 /// The pool's own address, used as the coinbase target when a miner supplies an
 /// unparseable address (see the authorize handler). Configurable via the
-/// POOL_FALLBACK_ADDRESS env var; defaults to the FireCash pool wallet.
+/// POOL_FALLBACK_ADDRESS env var; defaults to the ZKas pool wallet.
 fn pool_fallback_address() -> String {
     std::env::var("POOL_FALLBACK_ADDRESS").unwrap_or_else(|_| {
         "firecash:pyfjy228l6gukj2vwztyq6q88eeyggjhvcuzf2jx8u4lvla42d6x0y3dsgp0wzggcc9cytqreh8r7mn".to_string()

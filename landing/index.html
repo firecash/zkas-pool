@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>FireCash Mining Pool</title>
+<title>ZKas Mining Pool</title>
 <style>
   :root{
     --bg:#0b0b0f; --card:#16161d; --card2:#1c1c25; --border:#2a2a35;
-    --ink:#f6f6f8; --muted:#a0a0b0; --ember:#ff6b35; --ember2:#ff8659; --gold:#ffd24a; --ok:#22c55e;
+    --ink:#f6f6f8; --muted:#a0a0b0; --ember:#17d6be; --ember2:#3ee6d1; --gold:#8ef0e2; --ok:#22c55e;
   }
   *{box-sizing:border-box}
   body{
@@ -71,8 +71,8 @@
 <body>
 <div class="wrap">
   <header>
-    <img src="/assets/flame.svg" alt="FireCash" />
-    <h1>Fire<span>Cash</span> Pool</h1>
+    <img src="/assets/zkas.png" alt="ZKas" />
+    <h1><span>Z</span>Kas Pool</h1>
     <div class="status"><span id="dot" class="dot"></span><span id="statusText">connecting…</span></div>
   </header>
 
@@ -81,18 +81,18 @@
     <h2>Connect your miner</h2>
     <div class="connect">
       <div class="srv">
-        <div class="field" id="srvField">mining-pool.firecash.info</div>
-        <button class="copy" data-copy="mining-pool.firecash.info">Copy</button>
+        <div class="field" id="srvField">pool.zkas.info</div>
+        <button class="copy" data-copy="pool.zkas.info">Copy</button>
       </div>
       <div class="ports">
-        <div class="port" data-copy="stratum+tcp://mining-pool.firecash.info:5555"><span class="t">Auto</span><b>5555</b></div>
-        <div class="port" data-copy="stratum+tcp://mining-pool.firecash.info:5566"><span class="t">Low</span><b>5566</b></div>
-        <div class="port" data-copy="stratum+tcp://mining-pool.firecash.info:5577"><span class="t">Med</span><b>5577</b></div>
-        <div class="port" data-copy="stratum+tcp://mining-pool.firecash.info:5588"><span class="t">High</span><b>5588</b></div>
+        <div class="port" data-copy="stratum+tcp://pool.zkas.info:5555"><span class="t">Auto</span><b>5555</b></div>
+        <div class="port" data-copy="stratum+tcp://pool.zkas.info:5566"><span class="t">Low</span><b>5566</b></div>
+        <div class="port" data-copy="stratum+tcp://pool.zkas.info:5577"><span class="t">Med</span><b>5577</b></div>
+        <div class="port" data-copy="stratum+tcp://pool.zkas.info:5588"><span class="t">High</span><b>5588</b></div>
       </div>
     </div>
     <div class="hint">
-      Username = your <a href="https://wallet.firecash.info">firecash:</a> address (e.g. <code>firecash:abc….rig1</code>), password = <code>x</code>. Use <b>5555</b> if unsure — rewards are paid privately to your address.
+      Username = your <a href="https://wallet.zkas.info">zkas:</a> address (e.g. <code>zkas:abc….rig1</code>), password = <code>x</code>. Use <b>5555</b> if unsure — rewards are paid privately to your address.
     </div>
   </div>
 
@@ -101,7 +101,7 @@
     <h2>Your miner stats</h2>
     <div class="connect">
       <div class="srv">
-        <input class="field" id="lookupAddr" placeholder="firecash:… (your address)"
+        <input class="field" id="lookupAddr" placeholder="zkas:… (your address)"
           style="border:1px solid var(--border);outline:none;color:var(--ink)" />
         <button class="copy" id="lookupBtn">Check</button>
       </div>
@@ -117,7 +117,7 @@
       <table style="margin-top:12px"><thead><tr><th>Worker</th><th>Hashrate</th><th>Shares</th></tr></thead>
         <tbody id="mWorkers"></tbody></table>
       <div class="hint" style="margin-top:12px">
-        Each block pays <b>60 $firecash</b> straight to your shielded address. <b>Confirmed</b> = final; <b>waiting</b> = still maturing (~10 min). The pool can't see your shielded balance — check it in your <a href="https://wallet.firecash.info">wallet</a>.
+        Each block pays <b>60 $zkas</b> straight to your shielded address. <b>Confirmed</b> = final; <b>waiting</b> = still maturing (~10 min). The pool can't see your shielded balance — check it in your <a href="https://wallet.zkas.info">wallet</a>.
       </div>
     </div>
     <div id="minerEmpty" class="hint" style="margin-top:12px;display:none">No miner found for that address yet — check it's correct and that your rig is connected.</div>
@@ -134,7 +134,7 @@
       <div class="stat"><div class="v" id="stHeight">–</div><div class="l">Block height</div></div>
       <div class="stat"><div class="v" id="stNet">–</div><div class="l">Network hashrate</div></div>
       <div class="stat"><div class="v">0%</div><div class="l">Pool fee</div></div>
-      <div class="stat"><div class="v">60 $firecash</div><div class="l">Block reward</div></div>
+      <div class="stat"><div class="v">60 $zkas</div><div class="l">Block reward</div></div>
     </div>
   </div>
 
@@ -156,8 +156,8 @@
   </div>
 
   <div class="links">
-    <a href="https://explorer.firecash.info">Explorer</a>
-    <a href="https://wallet.firecash.info">Wallet</a>
+    <a href="https://explorer.zkas.info">Explorer</a>
+    <a href="https://wallet.zkas.info">Wallet</a>
     <a href="/metrics" target="_blank">Prometheus</a>
   </div>
 </div>
@@ -228,8 +228,8 @@
       $('mHash').textContent   = fmtHash((m.totalHashrate||0)*1e9);
       $('mShares').textContent = (m.totalShares||0).toLocaleString();
       $('mFound').textContent  = (m.blocksFound||0).toLocaleString();
-      $('mPaid').textContent   = (m.paidFc||0).toLocaleString()+' $firecash';
-      $('mPending').textContent= (m.pendingFc||0).toLocaleString()+' $firecash';
+      $('mPaid').textContent   = (m.paidFc||0).toLocaleString()+' $zkas';
+      $('mPending').textContent= (m.pendingFc||0).toLocaleString()+' $zkas';
       $('mWorkers').innerHTML  = (m.workers||[]).map(w=>`<tr>
         <td>${w.worker||'—'}</td><td>${fmtHash((w.hashrate||0)*1e9)}</td>
         <td>${(w.shares||0).toLocaleString()}</td></tr>`).join('') || '<tr><td colspan="3" class="empty">No active workers.</td></tr>';

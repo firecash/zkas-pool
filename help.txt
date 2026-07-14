@@ -1,11 +1,11 @@
 ===============================================================================
- FireCash ($firecash) — Mining Pool Operator Guide
+ ZKas ($zkas) — Mining Pool Operator Guide
 ===============================================================================
 
-This document explains what the FireCash chain is, how to point an existing
-Kaspa-style pool at it, and how FireCash's dual-acceptance merged mining works
+This document explains what the ZKas chain is, how to point an existing
+Kaspa-style pool at it, and how ZKas's dual-acceptance merged mining works
 (before and after activation). It is written for pool operators who already run
-a kHeavyHash (Kaspa) pool and want to add FireCash.
+a kHeavyHash (Kaspa) pool and want to add ZKas.
 
 
 -------------------------------------------------------------------------------
@@ -19,19 +19,19 @@ a kHeavyHash (Kaspa) pool and want to add FireCash.
     This does NOT change mining — you still mine plain block headers.
   - Proof of Work: kHeavyHash, BYTE-IDENTICAL to Kaspa mainnet. The PoW files
     are an untouched fork, so any Kaspa miner / ASIC / hashing library that
-    solves Kaspa headers solves FireCash headers with zero changes.
-  - Target block rate: 1 BPS. Coinbase emission: 60 $firecash per block (at 1 BPS),
-    i.e. 6e9 sompi/block (1 $firecash = 1e8 sompi). The initial reward halves every
-    3 months, caught by a two-step perpetual tail (6 -> 3 $firecash/block). Ticker:
-    $firecash.
-  - Address format: bech32 with HRP "firecash:" (mainnet), e.g.
-    firecash:pyfjy228...  (testnet "firecashtest:", devnet "firecashdev:",
-    simnet "firecashsim:"). Network id / datadir name: "firecash-mainnet".
+    solves Kaspa headers solves ZKas headers with zero changes.
+  - Target block rate: 1 BPS. Coinbase emission: 60 $zkas per block (at 1 BPS),
+    i.e. 6e9 sompi/block (1 $zkas = 1e8 sompi). The initial reward halves every
+    3 months, caught by a two-step perpetual tail (6 -> 3 $zkas/block). Ticker:
+    $zkas.
+  - Address format: bech32 with HRP "zkas:" (mainnet), e.g.
+    zkas:pyfjy228...  (testnet "zkastest:", devnet "zkasdev:",
+    simnet "zkassim:"; legacy firecash* prefixes stay valid). Network id / datadir name stays "firecash-mainnet" (wire/disk identity, not display).
   - Default ports: node gRPC 16110, P2P 16111 (same numbering as Kaspa's
-    16110/16111 — run FireCash on its own host or remap if co-locating).
+    16110/16111 — run ZKas on its own host or remap if co-locating).
 
-  Because the PoW is identical to Kaspa's, standing up a FireCash pool is
-  exactly like standing up a Kaspa pool: get a block template from a FireCash
+  Because the PoW is identical to Kaspa's, standing up a ZKas pool is
+  exactly like standing up a Kaspa pool: get a block template from a ZKas
   node, hand it to miners, submit solved blocks back. Nothing about the shielded
   layer touches the stratum path.
 
@@ -40,23 +40,23 @@ a kHeavyHash (Kaspa) pool and want to add FireCash.
  2. THE TWO SOLUTION TYPES FIRECASH ACCEPTS
 -------------------------------------------------------------------------------
 
-A FireCash block is valid if EITHER of these holds:
+A ZKas block is valid if EITHER of these holds:
 
   (A) NATIVE solution
-      The block's own kHeavyHash header clears the block's FireCash target.
+      The block's own kHeavyHash header clears the block's ZKas target.
       This is ordinary mining — identical to Kaspa. It is the BACKBONE of the
       chain: liveness never depends on Kaspa miners. Native solutions are
       accepted at all times, before and after merged-mining activation.
 
   (B) AUXPOW (merged-mined) solution
       The block carries an AuxPoW proof: a PARENT kHeavyHash block (typically a
-      Kaspa block) whose work clears *FireCash's own* target and which is
-      cryptographically bound to this FireCash block. Accepted ONLY once merged
+      Kaspa block) whose work clears *ZKas's own* target and which is
+      cryptographically bound to this ZKas block. Accepted ONLY once merged
       mining is active (see section 4).
 
 Key point on difficulty: the AuxPoW is checked against FIRECASH'S OWN target
 (its own DAA retarget), NOT Kaspa's. A hash that fails Kaspa's hard target
-routinely clears FireCash's easier one, so merged mining augments FireCash
+routinely clears ZKas's easier one, so merged mining augments ZKas
 security at essentially zero marginal cost to a Kaspa miner.
 
 The verifier always tries the NATIVE check first, then the aux check. A valid
@@ -70,7 +70,7 @@ because the aux data is excluded from the block hash (see section 5).
 
 No special support needed — treat it like a Kaspa pool:
 
-  1. Run a FireCash node:
+  1. Run a ZKas node:
        kaspad --appdir=<dir> --rpclisten=127.0.0.1:16110 --utxoindex
      (add --enable-unsynced-mining only for the first/solo node bootstrapping a
       brand-new network with no peers yet).
@@ -79,7 +79,7 @@ No special support needed — treat it like a Kaspa pool:
      get_block_template / submit_block behave exactly as on Kaspa. kHeavyHash
      ASICs (Bitmain, IceRiver, Goldshell, etc.) work unmodified.
 
-  3. Pay miners to a firecash: address. (In this reference pool the reward is a
+  3. Pay miners to a zkas: address. (In this reference pool the reward is a
      shielded coinbase note; payout accounting is handled by the pool, not the
      miner — the miner only ever sees plain headers.)
 
@@ -102,7 +102,7 @@ native solutions are accepted; at/after it, both native and AuxPoW are accepted.
   BEFORE activation (if gated):
       - ONLY native solutions (type A) are accepted.
       - AuxPoW proofs on a header are ignored for PoW purposes.
-      - Every pool mines FireCash natively. Nothing to configure.
+      - Every pool mines ZKas natively. Nothing to configure.
 
   AT/AFTER activation (and on the current always-on network):
       - BOTH native (A) and AuxPoW (B) solutions are accepted.
@@ -123,9 +123,9 @@ Binding chain (what the verifier walks):
 
     pow(parent_header) -> parent_header.hash_merkle_root -> parent_coinbase -> H_fc
 
-  where H_fc is the FireCash block hash. To merge-mine one FireCash block:
+  where H_fc is the ZKas block hash. To merge-mine one ZKas block:
 
-  1. Build the FireCash block and compute its hash H_fc. NOTE: H_fc is computed
+  1. Build the ZKas block and compute its hash H_fc. NOTE: H_fc is computed
      over the explicit header fields and EXCLUDES the aux_pow data, so it is
      stable no matter what parent later carries it.
 
@@ -139,10 +139,10 @@ Binding chain (what the verifier walks):
      erring safe).
 
   3. Mine the parent header with kHeavyHash against FIRECASH'S target (parent
-     bits = FireCash's bits). Because that target is easier than Kaspa's, most
+     bits = ZKas's bits). Because that target is easier than Kaspa's, most
      Kaspa-failing hashes still qualify here.
 
-  4. Submit the FireCash block with an AuxPow proof attached:
+  4. Submit the ZKas block with an AuxPow proof attached:
 
          AuxPow {
              parent_header:         Header,        // the mined parent
@@ -153,10 +153,10 @@ Binding chain (what the verifier walks):
   Verifier (verify_aux_pow) checks:
      a. committed_hash(parent_coinbase) == H_fc                 (binding)
      b. fold(coinbase, branch) == parent_header.hash_merkle_root(inclusion)
-     c. kHeavyHash(parent_header, parent.nonce) <= FireCash target (work)
+     c. kHeavyHash(parent_header, parent.nonce) <= ZKas target (work)
 
   The parent need NOT be a valid Kaspa block — only that real kHeavyHash work,
-  bound to H_fc, cleared FireCash's target. Stealing another block's PoW fails:
+  bound to H_fc, cleared ZKas's target. Stealing another block's PoW fails:
   a parent committing to fc_a cannot be reused for fc_b (commitment mismatch).
 
 
@@ -171,20 +171,20 @@ This reference pool (fork of Nacho-the-Kat/katpool) ships an opt-in merged path:
   When set, the bridge decorates the node RPC (bridge/src/merged.rs,
   bridge/src/kaspaapi.rs):
     - get_block_template hands the ASIC a PARENT block that already commits to
-      the current FireCash H_fc, with parent bits = FireCash's target.
-    - submit_block turns a solved parent back into a FireCash aux block and
+      the current ZKas H_fc, with parent bits = ZKas's target.
+    - submit_block turns a solved parent back into a ZKas aux block and
       submits it (the aux proof rides RpcRawHeader.aux_pow, borsh-hex encoded).
   The stratum/job/share core is untouched, so the native ASIC path cannot
   regress. Miners connect and hash exactly as before.
 
   IMPORTANT CAVEAT — synthetic vs. real Kaspa parent:
-  Out of the box the "parent" the bridge builds is SYNTHETIC (FireCash-only).
-  That proves the aux path end to end, but the miner earns only FireCash — there
+  Out of the box the "parent" the bridge builds is SYNTHETIC (ZKas-only).
+  That proves the aux path end to end, but the miner earns only ZKas — there
   is no Kaspa reward, because the parent is not submitted to Kaspa. To get TRUE
-  dual-chain merged mining (Kaspa + FireCash from one hash):
+  dual-chain merged mining (Kaspa + ZKas from one hash):
      (a) pull the parent template from a real Kaspa node, insert FCMM||H_fc into
          its coinbase extra_data, and submit winning parents to BOTH Kaspa (as a
-         Kaspa block) and FireCash (as an aux block);
+         Kaspa block) and ZKas (as an aux block);
      (b) make the payout accountant track the parent hash in merged mode.
   Until (a)+(b) are done, run merged mode for validation only, not for revenue.
 
@@ -235,7 +235,7 @@ TWO WAYS MONEY LEAVES THE POOL (accountant/src/payout.rs: PayoutTrigger):
 
   (1) AUTO-SEND  (PayoutTrigger::AutoSweep)  — the default, no action needed.
       A scheduled sweep picks up every reward that has passed the 10-day cliff
-      and sends it to the miner's firecash: address at 100%. NO SIGNATURE is
+      and sends it to the miner's zkas: address at 100%. NO SIGNATURE is
       required: the funds are fully vested and go to the address the miner
       already mined to. Rewards still inside the cliff are left to keep vesting
       and are picked up by a later sweep once they mature.
@@ -260,12 +260,12 @@ TWO WAYS MONEY LEAVES THE POOL (accountant/src/payout.rs: PayoutTrigger):
  9. SUMMARY FOR A POOL OPERATOR
 -------------------------------------------------------------------------------
 
-  - Want to mine FireCash today?  Run a FireCash node + your Kaspa-style bridge.
+  - Want to mine ZKas today?  Run a ZKas node + your Kaspa-style bridge.
     It's kHeavyHash — nothing special. Native solutions are always valid.
   - On the current network merged mining is active from genesis, so you MAY
     additionally submit merged (AuxPoW) solutions built on a Kaspa parent; native
     keeps working unchanged. (If a future relaunch gates it to a DAA score, aux is
     accepted only at/after that score.)
-  - For real Kaspa+FireCash dual rewards you must feed a real Kaspa template and
+  - For real Kaspa+ZKas dual rewards you must feed a real Kaspa template and
     submit winning parents to both chains (section 6 caveat).
 ===============================================================================

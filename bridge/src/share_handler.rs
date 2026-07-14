@@ -453,7 +453,7 @@ impl ShareHandler {
         }
 
         // Parse job ID - can be either string or number
-        let job_id = match &event.params[1] {
+        let mut job_id = match &event.params[1] {
             serde_json::Value::String(s) => {
                 debug!("[SUBMIT] Job ID is string: '{}'", s);
                 s.parse::<u64>().map_err(|e| format!("job id is not parsable as a number: {}", e))?
@@ -495,24 +495,42 @@ impl ShareHandler {
                 j
             }
             None => {
-                // Job doesn't exist at slot - log debug info
+                // Job doesn't exist at slot. IceRivers routinely submit off-by-N job IDs
+                // (own numbering after reconnects / self-incremented IDs), so before dropping
+                // the share, try the client's newest stored job — the header the rig is most
+                // plausibly mining. The PoW check downstream is header-specific, so a wrong
+                // guess just fails validation; a right guess recovers the share (and any KAS
+                // block riding on it). The walk-back loop below then tries older jobs too.
                 let stored_job_ids = state.get_stored_job_ids();
-                warn!(
-                    "[SUBMIT] Job ID {} not found at slot {} (current counter: {}, stored IDs: {:?})",
-                    job_id,
-                    job_id % 300,
-                    current_counter,
-                    stored_job_ids
-                );
-                // Job doesn't exist - fail immediately
-                let wallet_addr = ctx.wallet_addr.lock().clone();
-                let worker_name = ctx.worker_name.lock().clone();
-                record_worker_error(&self.instance_id, &wallet_addr, ErrorShortCode::MissingJob.as_str());
-                if let Some(ev) = Self::build_share_rejected(&wallet_addr, &worker_name, ShareRejectReason::MissingJob, correlation_id)
-                {
-                    self.emit(ev);
+                let fallback = stored_job_ids.iter().max().copied().and_then(|latest| state.get_job(latest).map(|j| (latest, j)));
+                match fallback {
+                    Some((latest, j)) => {
+                        warn!(
+                            "[SUBMIT] Job ID {} not found (counter: {}) — retrying against latest stored job {}",
+                            job_id, current_counter, latest
+                        );
+                        job_id = latest;
+                        j
+                    }
+                    None => {
+                        warn!(
+                            "[SUBMIT] Job ID {} not found at slot {} (current counter: {}, stored IDs: {:?})",
+                            job_id,
+                            job_id % 300,
+                            current_counter,
+                            stored_job_ids
+                        );
+                        let wallet_addr = ctx.wallet_addr.lock().clone();
+                        let worker_name = ctx.worker_name.lock().clone();
+                        record_worker_error(&self.instance_id, &wallet_addr, ErrorShortCode::MissingJob.as_str());
+                        if let Some(ev) =
+                            Self::build_share_rejected(&wallet_addr, &worker_name, ShareRejectReason::MissingJob, correlation_id)
+                        {
+                            self.emit(ev);
+                        }
+                        return Err("job does not exist. stale?".into());
+                    }
                 }
-                return Err("job does not exist. stale?".into());
             }
         };
 
@@ -670,15 +688,33 @@ impl ShareHandler {
             );
 
             // Calculate the block-found target. In real merged mining the parent carries
-            // the (hard) Kaspa target in header.bits, but FireCash aux blocks must be found
-            // at the FireCash (easier) cadence — so use the FireCash target when merged,
+            // the (hard) Kaspa target in header.bits, but ZKas aux blocks must be found
+            // at the ZKas (easier) cadence — so use the ZKas target when merged,
             // falling back to the parent's own bits otherwise.
             use crate::hasher::calculate_target;
-            let network_target =
-                kaspa_api.merged_fc_target(&current_job.block).unwrap_or_else(|| calculate_target(header_clone.bits as u64));
+            let merged_fc = kaspa_api.merged_fc_target(&current_job.block);
+            let merged_mode = merged_fc.is_some();
+            let network_target = merged_fc.unwrap_or_else(|| calculate_target(header_clone.bits as u64));
 
             // Check if pow_value meets network target (lower hash is better)
             let meets_network_target = pow_value <= network_target;
+
+            // Merged-mining visibility: full KAS clears are rare (minutes apart fleet-wide),
+            // so shares within 1024x of the Kaspa target are logged as near-misses — at the
+            // current fleet hashrate several per minute are expected, which makes a silent
+            // failure in the share→Kaspa pipeline observable long before a real find.
+            if merged_mode {
+                let kaspa_target = calculate_target(header_clone.bits as u64);
+                if pow_value <= (kaspa_target.clone() << 10u32) {
+                    info!(
+                        "{} kaspa near-miss (within 1024x of KAS target): full_clear={} worker={} job={}",
+                        LogColors::block("[MERGED]"),
+                        pow_value <= kaspa_target,
+                        worker_id,
+                        current_job_id
+                    );
+                }
+            }
             // IMPORTANT: Use kaspa_pow's own compact-target handling as the source of truth.
             // This avoids any potential mismatch in our BigUint conversion/comparison path.
             pow_passed = check_passed;
@@ -822,15 +858,24 @@ impl ShareHandler {
                     format!("{:x} (set from ASIC submission)", nonce_val)
                 );
 
-                // Warn if timestamp is very old (more than 60 seconds)
-                // This shouldn't happen with frequent template updates, but log it for debugging
-                if timestamp_age_sec > 60 {
+                // A share on a template older than 10s means the rig is grinding a dead job —
+                // at Kaspa's 10 BPS a 10s-old parent is already ~100 blocks deep, so any KAS
+                // find on it is red/unpaid; healthy rigs submit on jobs ≤2s old.
+                // it fell out of the job-broadcast path (seen after mass reconnects: per-client
+                // job counter frozen at 1-2 while healthy rigs advance). Every KAS find made on
+                // such a parent lands red/unpaid on Kaspa (10 BPS), so the rig's hashrate is
+                // 100% wasted. Kick it: on reconnect it re-registers and gets fresh templates.
+                if timestamp_age_sec > 10 {
                     warn!(
                         "{} {} {}",
                         LogColors::block("[BLOCK]"),
-                        LogColors::error("Timestamp is old:"),
-                        format!("{} seconds old - block template may be stale", timestamp_age_sec)
+                        LogColors::error("STALE RIG KICKED:"),
+                        format!(
+                            "worker={} submitted work for a {}s-old template (stuck job) — disconnecting to force a clean re-handshake",
+                            worker_name, timestamp_age_sec
+                        )
                     );
+                    ctx.disconnect();
                 }
 
                 // Create new block with updated header
@@ -1845,7 +1890,7 @@ pub trait KaspaApiTrait: Send + Sync {
 
     async fn get_current_block_color(&self, block_hash: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
 
-    /// Real merged mining: the FireCash (easier) block-found target for a given parent,
+    /// Real merged mining: the ZKas (easier) block-found target for a given parent,
     /// or `None` when not merged / the parent is unknown (caller then uses the parent's
     /// own `header.bits`). Default `None` keeps non-KaspaApi impls (mocks) unaffected.
     fn merged_fc_target(&self, _parent_block: &Block) -> Option<num_bigint::BigUint> {

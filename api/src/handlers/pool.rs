@@ -281,7 +281,7 @@ pub async fn payout_cycle(
     .await
 }
 
-// `GET /api/v1/pool/leaderboard` was intentionally REMOVED: FireCash does not
+// `GET /api/v1/pool/leaderboard` was intentionally REMOVED: ZKas does not
 // expose per-miner or top-miner rankings (address, hashrate, pool-share) — that
 // deanonymizes miners. Only aggregate pool figures are served. See `api::app`.
 

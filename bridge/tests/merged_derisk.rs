@@ -1,7 +1,7 @@
 //! De-risk test for real dual-chain merged mining.
 //!
 //! The single unverified assumption in the merged design: *can this bridge's
-//! (FireCash-fork-typed) gRPC client fetch a block template from the upstream
+//! (ZKas-fork-typed) gRPC client fetch a block template from the upstream
 //! **Kaspa** node, convert it to a `Block`, and does our `FCMM || H_fc` commitment
 //! survive verbatim in the real Kaspa coinbase?* Everything downstream (dual-target
 //! share check, dual submit) is mechanical once this holds.
@@ -26,7 +26,7 @@ async fn merged_derisk_kaspa_template_carries_commitment() {
     let pay = std::env::var("FIRECASH_KASPA_PAY")
         .unwrap_or_else(|_| "kaspa:qpr3lpklkdlekuzus2yhnswfaypsgxaj7rfz4h3jzujk66ld5g5xs2p9gxuqg".to_string());
 
-    // A stand-in FireCash block hash to commit to.
+    // A stand-in ZKas block hash to commit to.
     let h_fc = Hash::from_bytes([0x5Au8; 32]);
     // extra_data the miner would embed: MAGIC || H_fc (36 bytes).
     let extra_data = AuxPow::embed_commitment(&[], h_fc, &[]);
@@ -67,7 +67,7 @@ async fn merged_derisk_kaspa_template_carries_commitment() {
     assert_eq!(recovered, h_fc, "recovered commitment must equal H_fc we asked kaspad to embed");
 
     // The aux binding half (commitment + coinbase Merkle inclusion) must verify against
-    // the real parent — the same check FireCash consensus performs — for single-tx
+    // the real parent — the same check ZKas consensus performs — for single-tx
     // templates (empty branch). Multi-tx would need the real branch; the de-risk only
     // needs the commitment to survive + convert.
     if block.transactions.len() == 1 {

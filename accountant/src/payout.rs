@@ -1,6 +1,6 @@
 //! Payout **policy**: how a miner's vested balance actually leaves the pool.
 //!
-//! FireCash's payout has exactly two paths, and this module is the single place
+//! ZKas's payout has exactly two paths, and this module is the single place
 //! that decides which rewards each one moves and whether a signature is required:
 //!
 //! - **[`PayoutTrigger::AutoSweep`]** — the pool periodically sweeps every reward

@@ -1,16 +1,16 @@
 //! Merged-mining (AuxPoW) support for the stratum bridge — the pool-side engine that
-//! lets ASICs merge-mine FireCash.
+//! lets ASICs merge-mine ZKas.
 //!
 //! It plugs in as a decorator around [`crate::kaspaapi::KaspaApi`] so the entire
 //! stratum/job/share-validation core stays untouched:
 //!
-//! * **get_block_template** — fetch a FireCash template, then hand the ASIC a
-//!   *parent* (Kaspa-shaped) block whose single coinbase commits to the FireCash
-//!   block hash `H_fc` and whose target (`bits`) is the FireCash target. The ASIC
+//! * **get_block_template** — fetch a ZKas template, then hand the ASIC a
+//!   *parent* (Kaspa-shaped) block whose single coinbase commits to the ZKas
+//!   block hash `H_fc` and whose target (`bits`) is the ZKas target. The ASIC
 //!   grinds the parent's kHeavyHash exactly as it would a normal job.
 //! * **submit_block** — when a share clears the target, the "block" the bridge hands
 //!   back is that solved parent. We rebuild the [`AuxPow`] from it and submit the
-//!   *FireCash* block carrying the aux proof (the node accepts it via Option-2 dual
+//!   *ZKas* block carrying the aux proof (the node accepts it via Option-2 dual
 //!   acceptance). Because the aux rides `RpcRawHeader.aux_pow`, the existing
 //!   `(&block).into()` submit path transmits it unchanged.
 //!
@@ -66,7 +66,7 @@ pub fn coinbase_merkle_branch(txs: &[Transaction]) -> Vec<Hash> {
 }
 
 /// Build the parent block an ASIC hashes in merged mode: one coinbase committing to
-/// `H_fc`, with the FireCash target. Returns `(parent_block, h_fc)`.
+/// `H_fc`, with the ZKas target. Returns `(parent_block, h_fc)`.
 pub fn build_parent_block(fc_block: &Block) -> (Block, Hash) {
     let h_fc = fc_block.header.hash;
     let coinbase = Transaction::new(0, vec![], vec![], 0, SUBNETWORK_ID_COINBASE, 0, AuxPow::embed_commitment(&[], h_fc, &[]));
@@ -74,7 +74,7 @@ pub fn build_parent_block(fc_block: &Block) -> (Block, Hash) {
 
     let mut parent = Header::from_precomputed_hash(ZERO_HASH, vec![Hash::from_u64_word(0xF12E_CA54)]);
     parent.hash_merkle_root = hash_merkle_root;
-    parent.bits = fc_block.header.bits; // ASIC grinds against the FireCash target
+    parent.bits = fc_block.header.bits; // ASIC grinds against the ZKas target
     parent.timestamp = fc_block.header.timestamp;
     parent.finalize();
 
@@ -88,7 +88,7 @@ pub fn committed_h_fc(parent_block: &Block) -> Option<Hash> {
     AuxPow { parent_header: (*parent_block.header).clone(), parent_coinbase: coinbase, coinbase_merkle_branch: vec![] }.committed_hash()
 }
 
-/// Assemble the FireCash block carrying the AuxPoW proof, from the solved `parent_block`
+/// Assemble the ZKas block carrying the AuxPoW proof, from the solved `parent_block`
 /// (the bridge has set the winning nonce on its header) and the stashed `fc_block`.
 ///
 /// Builds the *real* coinbase Merkle branch from the parent's transactions, so this is
@@ -101,7 +101,7 @@ pub fn assemble_aux_block(parent_block: &Block, fc_block: &Block) -> Block {
     Block::new(fc_header, (*fc_block.transactions).clone())
 }
 
-/// A small bounded map from `H_fc` to the FireCash block awaiting a solved parent.
+/// A small bounded map from `H_fc` to the ZKas block awaiting a solved parent.
 /// Bounded FIFO so a busy pool that never solves a given template doesn't grow it
 /// without limit.
 pub struct MergedPending {

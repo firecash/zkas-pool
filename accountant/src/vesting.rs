@@ -1,4 +1,4 @@
-//! FireCash shielded-payout **cliff vesting**.
+//! ZKas shielded-payout **cliff vesting**.
 //!
 //! Every matured coinbase reward credited to a miner vests on a **hard cliff**:
 //! a claim settled **before** [`VESTING_CLIFF`] after the reward matured pays
@@ -136,7 +136,7 @@ where
 mod tests {
     use super::*;
 
-    const FC: i64 = 100_000_000; // 1 $firecash in sompi
+    const FC: i64 = 100_000_000; // 1 $zkas in sompi
     const BLOCK_REWARD: i64 = 60 * FC; // initial 1-BPS reward
 
     fn days(d: u64) -> Duration {

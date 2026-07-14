@@ -1,0 +1,57 @@
+# FireCash mining pool — public stratum bridge.
+# One shared FireCash node; several stratum ports at different fixed
+# difficulties plus an auto (vardiff) port, so any miner picks the right one.
+kaspad_address: "127.0.0.1:16110"
+block_wait_time: 500
+print_stats: true
+log_to_file: false
+health_check_port: ""
+web_dashboard_port: ":3033"
+var_diff: false
+shares_per_min: 20
+var_diff_stats: false
+pow2_clamp: true
+extranonce_size: 2
+coinbase_tag_suffix: "zkas"
+
+instances:
+  # Auto — variable difficulty, adapts to the miner (recommended default).
+  # IMPORTANT: the starting floor is also the *initial* difficulty a miner is
+  # handed on connect. It must be safe for the strongest hardware: a multi-TH/s
+  # ASIC handed a tiny difficulty submits tens of thousands of shares/sec, trips
+  # the anti-abuse frame-rate limiter, and is disconnected before vardiff can
+  # react — a death loop where the ASIC "barely gets blocks". So we seed a
+  # sane ASIC-safe floor (~a few shares/sec even at 100+ TH/s) and let vardiff
+  # adapt *up* for bigger hardware and *down* for GPUs.
+  - stratum_port: ":5555"
+    min_share_diff: 8192
+    prom_port: ":2114"
+    var_diff: true
+    shares_per_min: 20
+    log_to_file: false
+
+  # Low — small GPUs.
+  - stratum_port: ":5566"
+    min_share_diff: 512
+    prom_port: ":2115"
+    var_diff: true
+    log_to_file: false
+
+  # Medium — large GPUs / small ASICs.
+  - stratum_port: ":5577"
+    min_share_diff: 8192
+    prom_port: ":2116"
+    log_to_file: false
+
+  # High — ASICs (KS-series). Fixed, appropriately hard.
+  - stratum_port: ":5588"
+    min_share_diff: 65536
+    prom_port: ":2117"
+    log_to_file: false
+
+  # Test — low difficulty (CPU miners / smoke tests). Not for ASICs.
+  - stratum_port: ":5599"
+    min_share_diff: 64
+    prom_port: ":2118"
+    var_diff: true
+    log_to_file: false

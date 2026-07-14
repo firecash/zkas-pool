@@ -1,29 +1,29 @@
-# firecash-pool
+# zkas-pool
 
 [![License: MIT or Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Rust 1.91+](https://img.shields.io/badge/rust-1.91%2B-orange.svg)](Cargo.toml)
 
-Rust-first **[FireCash](https://github.com/firecash/firecash-rusty)** mining pool — a
+Rust-first **[ZKas](https://github.com/firecash/firecash-rusty)** mining pool — a
 fork of [Nacho-the-Kat/katpool](https://github.com/Nacho-the-Kat/katpool) retargeted at
-the shielded-by-default FireCash chain. A single-binary deployment that owns stratum,
+the shielded-by-default ZKas chain. A single-binary deployment that owns stratum,
 share validation, block submission (native **and** AuxPoW merged mining), PROP
-accounting, and **shielded `$firecash` payouts** — backed by `PostgreSQL`.
+accounting, and **shielded `$zkas` payouts** — backed by `PostgreSQL`.
 
-Because FireCash's PoW is kHeavyHash (byte-identical to Kaspa), the stratum/mining path
-is unchanged from a Kaspa pool. What is different is **payout**: FireCash has no
+Because ZKas's PoW is kHeavyHash (byte-identical to Kaspa), the stratum/mining path
+is unchanged from a Kaspa pool. What is different is **payout**: ZKas has no
 transparent UTXOs — the coinbase reward is minted as an Orchard shielded note — so the
 pool holds a **shielded treasury** and miners **claim** their balance (see below).
 
 > The internal crate and binary names are still `katpool` / `katpool-*`, inherited from
 > the upstream fork; they are not renamed to avoid churning 60+ patched `kaspa-*` deps.
-> The product is FireCash; the binary you build is `katpool`.
+> The product is ZKas; the binary you build is `katpool`.
 
 ## Status
 
-> **Under construction.** The stratum **bridge** connects to a FireCash node and mines
+> **Under construction.** The stratum **bridge** connects to a ZKas node and mines
 > native + AuxPoW solutions today. The **shielded payout path is being built** (shielded
 > treasury → PROP accounting → cliff vesting → signature-authenticated claim), replacing
-> the upstream transparent-KAS/KRC-20 payout engines, which do **not** apply to FireCash.
+> the upstream transparent-KAS/KRC-20 payout engines, which do **not** apply to ZKas.
 > Do not run this pool for real payouts until the shielded claim path lands.
 
 ## At a glance
@@ -32,25 +32,25 @@ pool holds a **shielded treasury** and miners **claim** their balance (see below
 
 | Component | Responsibility |
 |---|---|
-| [`bridge/`](bridge/) | Forked `rusty-kaspa` stratum bridge. Accepts ASIC stratum, validates shares, submits native + AuxPoW blocks to a FireCash node. **Works today.** |
+| [`bridge/`](bridge/) | Forked `rusty-kaspa` stratum bridge. Accepts ASIC stratum, validates shares, submits native + AuxPoW blocks to a ZKas node. **Works today.** |
 | [`accountant/`](accountant/) | Subscribes to share + block events, computes PROP allocations, writes per-miner balances. |
-| [`payout-kas/`](payout-kas/) | **Upstream transparent-KAS payout — NOT used by FireCash** (no transparent UTXOs). Being replaced by the shielded treasury payout. |
-| [`payout-krc20/`](payout-krc20/) | **Upstream NACHO KRC-20 rebate — not applicable to FireCash.** |
+| [`payout-kas/`](payout-kas/) | **Upstream transparent-KAS payout — NOT used by ZKas** (no transparent UTXOs). Being replaced by the shielded treasury payout. |
+| [`payout-krc20/`](payout-krc20/) | **Upstream NACHO KRC-20 rebate — not applicable to ZKas.** |
 | [`api/`](api/) | Read-only `axum` HTTP API. Serves **aggregate** pool stats only; per-miner stats are withheld for miner privacy. |
 | [`katpool/`](katpool/) | Main wiring binary that runs the active components in one process. |
 | [`crates/`](crates/) | Shared libraries: `katpool-domain`, `-db`, `-config`, `-metrics`, `-storagemass`, `-idempotency`, `-telemetry`, `-secrets`, `-fault-injection`. |
 
-## Payout model (FireCash)
+## Payout model (ZKas)
 
-FireCash payouts are **shielded and custodial-until-claim**:
+ZKas payouts are **shielded and custodial-until-claim**:
 
-- The pool mines to its **own shielded (`$firecash`) address** and tracks each miner's
+- The pool mines to its **own shielded (`$zkas`) address** and tracks each miner's
   PROP balance in Postgres, keyed by the miner's payout shielded address.
 - **Cliff vesting, per block reward.** Each reward vests on a 10-day cliff: **before 10
   days it pays 50%, at or after 10 days it pays 100%.** The withheld 50% on an early
   claim goes to the pool operator treasury (configurable).
 - **After 10 days: auto-sent, no action needed.** A scheduled sweep pays every reward
-  that has passed the cliff to the miner's `firecash:` address at 100% — **no signature,
+  that has passed the cliff to the miner's `zkas:` address at 100% — **no signature,
   no claim, nothing for the miner to do.**
 - **Before 10 days: signed early claim (optional).** A miner who wants their balance
   *early* requests a challenge and signs it with their shielded address key (the same
@@ -64,11 +64,11 @@ See `accountant/src/payout.rs` (the `AutoSweep` vs `SignedClaim` triggers) and
 
 ## Connecting a miner
 
-FireCash mining is ordinary kHeavyHash — point any Kaspa-style miner/ASIC at the pool's
-stratum port with your `firecash:` payout address as the username:
+ZKas mining is ordinary kHeavyHash — point any Kaspa-style miner/ASIC at the pool's
+stratum port with your `zkas:` payout address (legacy `firecash:` accepted) as the username:
 
 ```
-stratum+tcp://<pool-host>:<port>   user=firecash:<your-address>   pass=x
+stratum+tcp://<pool-host>:<port>   user=zkas:<your-address>   pass=x
 ```
 
 (The password field is unused; `x` or empty is fine.) See [`help.txt`](help.txt) for the
@@ -80,7 +80,7 @@ Prerequisites: Rust 1.91+ / edition 2024 (pinned via `rust-version` in
 [`Cargo.toml`](Cargo.toml)), Docker (for ephemeral test databases), and
 `cargo-deny` / `cargo-audit`.
 
-The patched `kaspa-*` / FireCash crates are pulled straight from the
+The patched `kaspa-*` / ZKas crates are pulled straight from the
 [`firecash-rusty`](https://github.com/firecash/firecash-rusty) fork over git — you do
 **not** need a local rusty-kaspa checkout at any particular path (Cargo fetches and pins it).
 
@@ -98,7 +98,7 @@ cargo deny check
 cargo run --release --bin katpool
 ```
 
-You also need a reachable FireCash node (`kaspad`) with `--utxoindex`. See
+You also need a reachable ZKas node (`kaspad`) with `--utxoindex`. See
 [`help.txt`](help.txt) §3 for node setup and the stratum bridge config
 ([`firecash-bridge.yaml`](firecash-bridge.yaml)).
 
@@ -118,7 +118,7 @@ You also need a reachable FireCash node (`kaspad`) with `--utxoindex`. See
 
 Start at [`docs/README.md`](docs/README.md) for the index and [`help.txt`](help.txt) for
 the operator guide. Some `docs/` pages still carry upstream (Kaspa/KRC-20) specifics and
-are being migrated to FireCash.
+are being migrated to ZKas.
 
 ## License
 
