@@ -22,7 +22,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 INSTANCE_PORTS = [2114, 2115, 2116, 2117, 2118]
 LISTEN = ("127.0.0.1", 3034)
-REWARD_FC = 44          # coinbase reward per block, paid straight to the miner's address
+REWARD_FC = 60          # coinbase reward per block at the live 1 BPS rate (60 ZKAS/block;
+                        # see consensus/src/processes/coinbase.rs — 60 FC/s ÷ 1 BPS = 60/block)
 TWO32 = 2 ** 32
 SAMPLE_SECS = 15        # scrape cadence
 WINDOW_SECS = 600       # hashrate = Δ(share-diff) · 2^32 / Δt over a 10-min rolling window
