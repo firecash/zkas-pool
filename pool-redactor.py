@@ -120,6 +120,30 @@ def sample():
             "hashrate": hr_ghs,                 # GH/s
             "shares": int(shares.get(k, 0)),
         })
+    # Also surface workers that are CONNECTED at the bridge but have not landed a
+    # valid share yet (e.g. a small rig stuck on too-high difficulty, or one that
+    # just connected). Prometheus only emits a series once a worker shares, so
+    # without this they connect but never appear in the dashboard / miner lookup.
+    seen = {(w["wallet"], w["worker"]) for w in workers}
+    try:
+        braw = urllib.request.urlopen("http://127.0.0.1:3033/api/stats", timeout=5).read().decode()
+        for bw in (json.loads(braw).get("workers") or []):
+            wallet = bw.get("wallet")
+            worker = bw.get("worker") or "—"
+            if not wallet or (wallet, worker) in seen:
+                continue
+            seen.add((wallet, worker))
+            workers.append({
+                "worker": worker,
+                "wallet": wallet,
+                "hashrate": 0.0,                       # no valid share yet → warming up
+                "shares": int(bw.get("shares") or 0),
+                "difficulty": bw.get("currentDifficulty"),
+                "warmingUp": True,
+            })
+    except Exception:
+        pass
+
     # drop workers gone since last scrape
     live = set(diff.keys())
     for k in list(_hist.keys()):
@@ -200,6 +224,8 @@ def redact(stats, bbw):
             "wallet": mask_addr(w.get("wallet")),
             "hashrate": w.get("hashrate"),
             "shares": w.get("shares"),
+            "difficulty": w.get("difficulty"),
+            "warmingUp": bool(w.get("warmingUp")),
         } for w in sorted(workers, key=lambda x: -(x.get("hashrate") or 0))],
         "blocks": [],
     }
@@ -218,6 +244,8 @@ def miner(address, stats, bbw):
             "worker": w.get("worker") or "—",
             "hashrate": w.get("hashrate"),   # GH/s
             "shares": w.get("shares") or 0,
+            "difficulty": w.get("difficulty"),
+            "warmingUp": bool(w.get("warmingUp")),
         } for w in workers],
         "totalHashrate": sum((w.get("hashrate") or 0) for w in workers),  # GH/s
         "totalShares": sum((w.get("shares") or 0) for w in workers),
