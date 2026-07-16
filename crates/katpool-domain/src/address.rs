@@ -1,12 +1,13 @@
-//! [`WalletAddress`] — a validated Kaspa wallet address.
+//! [`WalletAddress`] — a validated ZKas/Kaspa wallet address.
 //!
 //! Phase 1 validation is intentionally minimal: parse the prefix
-//! (`kaspa:` or `kaspatest:`) and require a reasonable bech32 body length
-//! and character set. Full bech32 verification with the kaspa-addresses
-//! crate lands in Phase 4 when the payout engine actually constructs
-//! transactions; here we just want to reject the gross malformations
-//! that would smuggle non-address strings through stratum into the
-//! accounting layer.
+//! (canonical ZKas `zkas:`-family HRPs, the legacy `firecash:`-family
+//! aliases, or the upstream `kaspa:`/`kaspatest:` forms) and require a
+//! reasonable bech32 body length and character set. Full bech32
+//! verification with the (forked) kaspa-addresses crate happens where
+//! the payout engine actually constructs transactions; here we just
+//! want to reject the gross malformations that would smuggle
+//! non-address strings through stratum into the accounting layer.
 
 use std::fmt;
 
@@ -19,27 +20,52 @@ use thiserror::Error;
 #[serde(transparent)]
 pub struct WalletAddress(String);
 
+/// Address prefixes (with trailing `:`) the accounting layer accepts.
+///
+/// Order matters only for `strip_prefix` matching: longer prefixes sharing a
+/// stem come first (`kaspatest:` before `kaspa:`, `firecashtest:` before
+/// `firecash:`) so the shorter one can't shadow them. Kept in lock-step with
+/// the forked `kaspa-addresses` crate (`crypto/addresses/src/lib.rs`), which
+/// treats the `zkas`-family HRPs as canonical and the `firecash`-family as
+/// accepted legacy aliases, and with the schema's `wallet_address_format`
+/// CHECK in `crates/katpool-db/migrations/20260526000000_bootstrap.sql`.
+pub const ACCEPTED_PREFIXES: &[&str] = &[
+    // ZKas canonical
+    "zkastest:",
+    "zkassim:",
+    "zkasdev:",
+    "zkas:",
+    // ZKas legacy (pre-rebrand) aliases
+    "firecashtest:",
+    "firecashsim:",
+    "firecashdev:",
+    "firecash:",
+    // Upstream Kaspa forms (kept so upstream-derived tests/tooling still pass)
+    "kaspatest:",
+    "kaspa:",
+];
+
 impl WalletAddress {
-    /// Minimum total length: `"kaspa:"` (6) + an absolute floor of 8 body
-    /// characters. Real Kaspa addresses are far longer; this is just a
-    /// "definitely garbage" rejection floor.
-    pub const MIN_TOTAL_LEN: usize = 14;
+    /// Minimum total length: shortest prefix (`"zkas:"`, 5) + an absolute
+    /// floor of 8 body characters. Real addresses are far longer; this is
+    /// just a "definitely garbage" rejection floor.
+    pub const MIN_TOTAL_LEN: usize = 13;
 
-    /// Maximum total length we'll consider plausible. Real bech32 Kaspa
-    /// addresses are ~70 characters; we cap at 96 to leave headroom and
-    /// still bound memory.
-    pub const MAX_TOTAL_LEN: usize = 96;
+    /// Maximum total length we'll consider plausible. A ZKas shielded
+    /// (Orchard) address body is ~79 characters, so with the longest legacy
+    /// prefix (`firecashtest:`) a real address runs ~92; we cap at 110 to
+    /// leave headroom and still bound memory.
+    pub const MAX_TOTAL_LEN: usize = 110;
 
-    /// Parse and validate the given string as a Kaspa wallet address.
+    /// Parse and validate the given string as a ZKas/Kaspa wallet address.
     ///
     /// Returns an [`AddressError`] describing the first failing check.
     pub fn new(s: impl Into<String>) -> Result<Self, AddressError> {
         let s: String = s.into();
-        let body = if let Some(rest) = s.strip_prefix("kaspa:") {
-            rest
-        } else if let Some(rest) = s.strip_prefix("kaspatest:") {
-            rest
-        } else {
+        let Some(body) = ACCEPTED_PREFIXES
+            .iter()
+            .find_map(|p| s.strip_prefix(p))
+        else {
             return Err(AddressError::InvalidPrefix);
         };
 
@@ -76,8 +102,9 @@ impl fmt::Display for WalletAddress {
 /// Errors from [`WalletAddress::new`].
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum AddressError {
-    /// String didn't start with `kaspa:` or `kaspatest:`.
-    #[error("address must start with `kaspa:` or `kaspatest:`")]
+    /// String didn't start with an accepted prefix (see
+    /// [`ACCEPTED_PREFIXES`]).
+    #[error("address must start with a zkas:/firecash:/kaspa:-family prefix")]
     InvalidPrefix,
     /// Address too short to be a real bech32 Kaspa address.
     #[error("address length {len} is below the minimum")]
@@ -121,6 +148,50 @@ mod tests {
             WalletAddress::new("kaspatest:qrxd24c5w6pl2qa9k7q5e0lyepuu4r5t2f6awvxllk0a83qqfys9")
                 .expect("valid testnet address");
         assert!(a.as_str().starts_with("kaspatest:"));
+    }
+
+    /// A real ZKas shielded (Orchard) address body — 79 chars.
+    const ZKAS_BODY: &str =
+        "pyfjy228l6gukj2vwztyq6q88eeyggjhvcuzf2jx8u4lvla42d6x0y3dsgp0wzggcc9cytqreh8r7mn";
+
+    #[test]
+    fn accepts_zkas_mainnet_address() {
+        let a = WalletAddress::new(format!("zkas:{ZKAS_BODY}")).expect("valid zkas address");
+        assert!(a.as_str().starts_with("zkas:"));
+    }
+
+    #[test]
+    fn accepts_legacy_firecash_address() {
+        let a = WalletAddress::new(format!("firecash:{ZKAS_BODY}"))
+            .expect("valid legacy firecash address");
+        assert!(a.as_str().starts_with("firecash:"));
+    }
+
+    #[test]
+    fn accepts_zkas_testnet_and_dev_prefixes() {
+        for p in ["zkastest", "zkasdev", "zkassim", "firecashtest"] {
+            WalletAddress::new(format!("{p}:{ZKAS_BODY}"))
+                .unwrap_or_else(|e| panic!("{p}: should be accepted: {e}"));
+        }
+    }
+
+    #[test]
+    fn longest_real_form_fits_length_cap() {
+        // firecashtest: (13) + 79-char Orchard body = 92 — must be inside
+        // MAX_TOTAL_LEN with room to spare.
+        let s = format!("firecashtest:{ZKAS_BODY}");
+        assert!(s.len() <= WalletAddress::MAX_TOTAL_LEN);
+        WalletAddress::new(s).expect("longest real form accepted");
+    }
+
+    #[test]
+    fn prefix_only_is_rejected() {
+        // `zkas:` must not shadow-match inside `zkastest:...` bodies, and a
+        // bare prefix with a too-short body is garbage.
+        assert!(matches!(
+            WalletAddress::new("zkas:q"),
+            Err(AddressError::TooShort { .. })
+        ));
     }
 
     #[test]

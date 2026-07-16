@@ -43,11 +43,20 @@ use crate::error::AccountantError;
 /// never charge anything close to this.
 const MAX_TOPLINE_BPS: u16 = 1_000;
 
-/// Rebate ratio for `Standard`-tier miners: 33% of the fee.
-pub const STANDARD_REBATE_BPS: u16 = 3_300;
+/// Rebate ratio for `Standard`-tier miners.
+///
+/// **ZKas: 0.** The upstream NACHO/KRC-20 rebate rail (Kasplex indexer +
+/// KRC-20 payout engine) does not exist on ZKas, so any non-zero accrual
+/// would pile up in `nacho_rebate` forever with no way to ever pay it —
+/// a silent fee black hole that also misreports the effective pool fee.
+/// The whole topline fee is therefore pool fee. The accrual mechanism is
+/// kept (zeroed) so re-enabling a rebate later is a one-constant change.
+pub const STANDARD_REBATE_BPS: u16 = 0;
 
-/// Rebate ratio for `Elite`-tier miners: 100% of the fee.
-pub const ELITE_REBATE_BPS: u16 = 10_000;
+/// Rebate ratio for `Elite`-tier miners. **ZKas: 0** — same rationale as
+/// [`STANDARD_REBATE_BPS`]; the tier classifier is inert on ZKas anyway
+/// (`StaticTierClassifier::standard` is the wired default).
+pub const ELITE_REBATE_BPS: u16 = 0;
 
 /// Default topline fee if `KATPOOL_FEE_TOPLINE_BPS` is unset: 75 bps = 0.75%.
 pub const DEFAULT_TOPLINE_BPS: u16 = 75;
@@ -292,8 +301,10 @@ mod tests {
 
     #[test]
     fn rebate_ratios_match_spec() {
-        assert_eq!(STANDARD_REBATE_BPS, 3_300, "standard rebate = 33%");
-        assert_eq!(ELITE_REBATE_BPS, 10_000, "elite rebate = 100%");
+        // ZKas: the NACHO/KRC-20 rebate rail doesn't exist, so both tiers
+        // accrue nothing — the whole topline fee is pool fee.
+        assert_eq!(STANDARD_REBATE_BPS, 0, "no rebate rail on ZKas");
+        assert_eq!(ELITE_REBATE_BPS, 0, "no rebate rail on ZKas");
     }
 
     fn lookup_unset(_: &str) -> Result<String, env::VarError> {

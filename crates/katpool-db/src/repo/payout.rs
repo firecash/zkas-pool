@@ -28,6 +28,9 @@ pub enum PayoutKind {
     Kas,
     /// KRC-20 NACHO payout cycle (commit/reveal pair per recipient).
     Krc20Nacho,
+    /// ZKas shielded payout cycle (one Orchard shielded transaction per
+    /// recipient, sent from the pool's shielded treasury).
+    Zkas,
 }
 
 /// Cycle status state machine.
@@ -198,6 +201,7 @@ pub fn idempotency_key(kind: PayoutKind, daa_start: DaaScore, daa_end: DaaScore)
     let prefix = match kind {
         PayoutKind::Kas => "kas",
         PayoutKind::Krc20Nacho => "krc20",
+        PayoutKind::Zkas => "zkas",
     };
     format!("{prefix}-{}-{}", daa_start.value(), daa_end.value())
 }
@@ -420,6 +424,57 @@ pub async fn list_kas_eligible_wallets<'e, E: PgExecutor<'e>>(
                   -- allocation total and drive payable deeply negative. The
                   -- importer tags every imported cycle `kind-legacy-<hash>`.
                   AND pc.idempotency_key NOT LIKE 'kas-legacy-%'
+                GROUP BY po.wallet_id
+           ) p ON p.wallet_id = w.id
+          WHERE a.allocated_sompi - COALESCE(p.confirmed_paid_sompi, 0) >= $1
+          ORDER BY payable_sompi DESC, w.id ASC",
+    )
+    .bind(threshold_sompi)
+    .fetch_all(executor)
+    .await
+    .map_err(DbError::from)
+}
+
+/// Default minimum payable balance for a ZKas shielded payout (5 ZKAS).
+///
+/// Each recipient costs one full Orchard proof (seconds of CPU) plus the
+/// shielded transaction fee, so dust-level balances are left to accrue.
+pub const DEFAULT_ZKAS_PAYOUT_THRESHOLD_SOMPI: i64 = 500_000_000;
+
+/// Wallets whose payable ZKas balance meets `threshold_sompi`.
+///
+/// Identical accounting shape to [`list_kas_eligible_wallets`] — payable is
+/// `sum(share_allocation.net_payout_sompi)` minus confirmed payouts — but
+/// counts `zkas` cycles (excluding any `zkas-legacy-%` cutover imports,
+/// mirroring the KAS legacy rule). Reuses [`KasEligibleWallet`] as the row
+/// shape; the fields are chain-agnostic. In-flight (`planned`/`submitted`)
+/// payouts do not reduce payable balance — the planner's idempotent rows
+/// prevent double-planning inside a cycle.
+pub async fn list_zkas_eligible_wallets<'e, E: PgExecutor<'e>>(
+    executor: E,
+    threshold_sompi: i64,
+) -> Result<Vec<KasEligibleWallet>, DbError> {
+    sqlx::query_as::<_, KasEligibleWallet>(
+        "SELECT w.id AS wallet_id,
+                w.address,
+                w.network,
+                a.allocated_sompi,
+                COALESCE(p.confirmed_paid_sompi, 0) AS confirmed_paid_sompi,
+                a.allocated_sompi - COALESCE(p.confirmed_paid_sompi, 0) AS payable_sompi
+           FROM wallet w
+           INNER JOIN (
+               SELECT wallet_id, sum(net_payout_sompi)::bigint AS allocated_sompi
+                 FROM share_allocation
+                GROUP BY wallet_id
+           ) a ON a.wallet_id = w.id
+           LEFT JOIN (
+               SELECT po.wallet_id,
+                      sum(po.amount_sompi)::bigint AS confirmed_paid_sompi
+                 FROM payout po
+                 INNER JOIN payout_cycle pc ON pc.id = po.cycle_id
+                WHERE pc.kind = 'zkas'
+                  AND po.status = 'confirmed'
+                  AND pc.idempotency_key NOT LIKE 'zkas-legacy-%'
                 GROUP BY po.wallet_id
            ) p ON p.wallet_id = w.id
           WHERE a.allocated_sompi - COALESCE(p.confirmed_paid_sompi, 0) >= $1
@@ -747,6 +802,39 @@ pub async fn list_for_cycle<'e, E: PgExecutor<'e>>(
           ORDER BY amount_sompi DESC, id ASC",
     )
     .bind(cycle_id)
+    .fetch_all(executor)
+    .await
+    .map_err(DbError::from)
+}
+
+/// One in-flight (submitted/accepted) ZKas payout awaiting confirmation.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ZkasInFlightPayout {
+    /// `payout.id`.
+    pub payout_id: i64,
+    /// Owning cycle.
+    pub cycle_id: i64,
+    /// Shielded tx hash recorded at submit (32 bytes).
+    pub tx_hash: Vec<u8>,
+    /// Accepting DAA score, if a prior pass observed acceptance.
+    pub accepted_daa_score: Option<i64>,
+}
+
+/// Every submitted-but-unconfirmed ZKas payout, across **all** cycles, so
+/// a straggler from a previous window (engine downtime over a rollover)
+/// still gets confirmed instead of stranding forever.
+pub async fn list_zkas_in_flight_payouts<'e, E: PgExecutor<'e>>(
+    executor: E,
+) -> Result<Vec<ZkasInFlightPayout>, DbError> {
+    sqlx::query_as::<_, ZkasInFlightPayout>(
+        "SELECT po.id AS payout_id, po.cycle_id, po.tx_hash, po.accepted_daa_score
+           FROM payout po
+           INNER JOIN payout_cycle pc ON pc.id = po.cycle_id
+          WHERE pc.kind = 'zkas'
+            AND po.status IN ('submitted', 'accepted')
+            AND po.tx_hash IS NOT NULL
+          ORDER BY po.id ASC",
+    )
     .fetch_all(executor)
     .await
     .map_err(DbError::from)

@@ -886,8 +886,20 @@ impl ShareHandler {
                 // Calculate block hash immediately after block creation
                 // Use kaspa_consensus_core::hashing::header::hash() for block hash calculation
                 // In Kaspa, the block hash is the header hash (transactions are represented by hash_merkle_root in header)
+                //
+                // MERGED MODE: the solved block is the *parent* (Kaspa-shaped)
+                // carrier whose coinbase commits to the ZKas block hash H_fc.
+                // The block that actually lands on the ZKas chain keeps H_fc
+                // (the AuxPoW rides outside the header hash), so every
+                // block-facing consumer — the blue-confirm poll, BlockFound /
+                // BlockAccepted events, the dashboard blocks list — must use
+                // H_fc, not the parent header hash (which never exists on the
+                // ZKas chain; using it left the pool at "0 blocks confirmed"
+                // for a full day of live mining).
                 use kaspa_consensus_core::hashing::header;
-                let block_hash = header::hash(&block.header).to_string();
+                let block_hash = kaspa_api
+                    .merged_chain_hash(&current_job.block)
+                    .map_or_else(|| header::hash(&block.header).to_string(), |h| h.to_string());
                 let block_daa_score = block.header.daa_score;
 
                 // Emit BlockFound *before* submitting to kaspad so consumers
@@ -1894,6 +1906,16 @@ pub trait KaspaApiTrait: Send + Sync {
     /// or `None` when not merged / the parent is unknown (caller then uses the parent's
     /// own `header.bits`). Default `None` keeps non-KaspaApi impls (mocks) unaffected.
     fn merged_fc_target(&self, _parent_block: &Block) -> Option<num_bigint::BigUint> {
+        None
+    }
+
+    /// The hash of the block that actually lands on the **ZKas chain** for a
+    /// solved job. In merged mode the ASIC grinds a *parent* (Kaspa-shaped)
+    /// block whose coinbase commits to the ZKas block hash `H_fc`; the parent
+    /// header's own hash never exists on the ZKas chain, so confirming /
+    /// displaying it always fails (the live "0 blocks / never confirmed blue"
+    /// bug). `None` ⇒ not merged: the job's own header hash IS the chain hash.
+    fn merged_chain_hash(&self, _parent_block: &Block) -> Option<kaspa_hashes::Hash> {
         None
     }
 }

@@ -68,13 +68,18 @@ CREATE TABLE wallet (
     last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT wallet_network_valid
         CHECK (network IN ('mainnet', 'testnet-10', 'testnet-11', 'devnet', 'simnet')),
+    -- ZKas HRPs are canonical (zkas: family), the pre-rebrand firecash: family
+    -- is an accepted legacy alias, and the upstream kaspa: family is kept so
+    -- upstream-derived fixtures/tests still insert. A ZKas shielded (Orchard)
+    -- address body is ~79 chars; kaspa schnorr bodies ~61 — hence {40,100}.
+    -- Keep in lock-step with katpool_domain::address::ACCEPTED_PREFIXES.
     CONSTRAINT wallet_address_format
         CHECK (
-            (network = 'mainnet'    AND address ~ '^kaspa:[a-z0-9]{50,80}$') OR
-            (network = 'testnet-10' AND address ~ '^kaspatest:[a-z0-9]{50,80}$') OR
-            (network = 'testnet-11' AND address ~ '^kaspatest:[a-z0-9]{50,80}$') OR
-            (network = 'devnet'     AND address ~ '^kaspadev:[a-z0-9]{50,80}$') OR
-            (network = 'simnet'     AND address ~ '^kaspasim:[a-z0-9]{50,80}$')
+            (network = 'mainnet'    AND address ~ '^(zkas|firecash|kaspa):[a-z0-9]{40,100}$') OR
+            (network = 'testnet-10' AND address ~ '^(zkastest|firecashtest|kaspatest):[a-z0-9]{40,100}$') OR
+            (network = 'testnet-11' AND address ~ '^(zkastest|firecashtest|kaspatest):[a-z0-9]{40,100}$') OR
+            (network = 'devnet'     AND address ~ '^(zkasdev|firecashdev|kaspadev):[a-z0-9]{40,100}$') OR
+            (network = 'simnet'     AND address ~ '^(zkassim|firecashsim|kaspasim):[a-z0-9]{40,100}$')
         )
 );
 

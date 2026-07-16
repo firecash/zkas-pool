@@ -1,0 +1,30 @@
+[package]
+name = "payout-zkas"
+description = "ZKas shielded payout engine: periodic full-balance sweeps from the pool's Orchard treasury, one shielded transaction per recipient, idempotent and single-leader"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+katpool-domain = { path = "../crates/katpool-domain" }
+katpool-db = { path = "../crates/katpool-db" }
+katpool-idempotency = { path = "../crates/katpool-idempotency" }
+kaspa-hashes = { workspace = true }
+kaspa-rpc-core = { workspace = true }
+kaspa-grpc-client = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

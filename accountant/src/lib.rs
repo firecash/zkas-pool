@@ -66,6 +66,7 @@ pub mod maturity;
 pub mod metrics;
 pub mod payout;
 pub mod replay;
+pub mod shielded_scan;
 pub mod tier;
 pub mod tier_kasplex;
 pub mod vesting;
@@ -95,6 +96,10 @@ pub use maturity::{
 pub use replay::{
     DbSnapshot, assert_snapshots_equal, load_ndjson_path, load_ndjson_reader, replay_all, snapshot,
     verify_dual_replay,
+};
+pub use shielded_scan::{
+    DEFAULT_MATURITY_SAFETY_DAA, DEFAULT_PAGE_LIMIT, SHIELDED_SCAN_CURSOR_KEY,
+    ScannerConfigError, ShieldedRewardScanner, extract_treasury_rewards,
 };
 pub use tier::{ClassifierError, StaticTierClassifier, TierClassifier};
 pub use tier_kasplex::{

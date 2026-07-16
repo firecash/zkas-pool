@@ -247,8 +247,8 @@ use tracing::{error, info, warn};
 
 use accountant::{
     AllocationEngine, ConsumerConfig, EventConsumer, FeeConfig, GeoIp, KaspadGrpcClient,
-    KasplexConfig, KasplexTierClassifier, MaturityConfig, MaturityTracker, StaticTierClassifier,
-    TierClassifier,
+    KasplexConfig, KasplexTierClassifier, MaturityConfig, MaturityTracker,
+    ShieldedRewardScanner, StaticTierClassifier, TierClassifier,
 };
 
 // The runtime orchestrator is intentionally long-form: every step
@@ -363,10 +363,35 @@ async fn main() -> Result<()> {
     )
     .await
     .context("tracker gRPC connect")?;
-    let tracker_kaspad = Arc::new(KaspadGrpcClient::new(
-        Arc::new(tracker_grpc),
-        cfg.pool_addresses.clone(),
-    ));
+    // Reward discovery is address-type driven: a shielded (Orchard) pool
+    // address means a ZKas chain, whose coinbase is a shielded note — the
+    // transparent UTXO-index client would find nothing, ever. The scanner
+    // walks `GetShieldedBlocks` for public coinbase mints to the treasury
+    // instead (see `accountant::shielded_scan`). Transparent addresses keep
+    // the upstream UTXO path.
+    let tracker_grpc = Arc::new(tracker_grpc);
+    let all_shielded = cfg
+        .pool_addresses
+        .iter()
+        .all(|a| a.version == kaspa_addresses::Version::ShieldedOrchard);
+    let tracker_kaspad: Arc<dyn accountant::KaspadClient> = if all_shielded {
+        info!("reward discovery: shielded coinbase scanner (Orchard treasury)");
+        Arc::new(
+            ShieldedRewardScanner::new(
+                Arc::clone(&tracker_grpc),
+                db.clone(),
+                &cfg.pool_addresses,
+                cfg.maturity.coinbase_maturity,
+            )
+            .context("building shielded reward scanner")?,
+        )
+    } else {
+        info!("reward discovery: transparent coinbase UTXO index");
+        Arc::new(KaspadGrpcClient::new(
+            tracker_grpc,
+            cfg.pool_addresses.clone(),
+        ))
+    };
 
     // ---- accountant pipeline ----------------------------------------
     let fee =
@@ -646,6 +671,115 @@ async fn main() -> Result<()> {
         None
     };
 
+    // ---- ZKas shielded payout engine (opt-in) ------------------------
+    // The payout path that actually applies to ZKas (shielded treasury,
+    // one Orchard tx per recipient via the `shielded-pay` CLI). Shares the
+    // `treasury:spend-leader` advisory lock with the engines above, so at
+    // most one treasury spender acts per tick. Disabled and dry-run by
+    // default — moving funds requires both KATPOOL_ZKAS_PAYOUT_ENABLED=true
+    // and KATPOOL_ZKAS_PAYOUT_DRY_RUN=false, plus the shielded-pay binary
+    // path and the treasury seed file. Env-configured (not katpool-config)
+    // while the engine is new; promote once the knobs settle.
+    let zkas_payout_enabled = std::env::var("KATPOOL_ZKAS_PAYOUT_ENABLED")
+        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+        .unwrap_or(false);
+    let zkas_payout_handle = if zkas_payout_enabled {
+        let env_u64 = |key: &str, default: u64| -> Result<u64> {
+            match std::env::var(key) {
+                Ok(v) => v.parse::<u64>().with_context(|| format!("{key}={v}: not a u64")),
+                Err(_) => Ok(default),
+            }
+        };
+        let bin = std::env::var("KATPOOL_SHIELDED_PAY_BIN")
+            .context("KATPOOL_ZKAS_PAYOUT_ENABLED=true requires KATPOOL_SHIELDED_PAY_BIN")?;
+        let seed_file = std::env::var("KATPOOL_ZKAS_TREASURY_SEED_FILE")
+            .context("KATPOOL_ZKAS_PAYOUT_ENABLED=true requires KATPOOL_ZKAS_TREASURY_SEED_FILE")?;
+        let dry_run = std::env::var("KATPOOL_ZKAS_PAYOUT_DRY_RUN")
+            .map(|v| !(v.eq_ignore_ascii_case("false") || v == "0"))
+            .unwrap_or(true);
+        let poll_secs = env_u64("KATPOOL_ZKAS_POLL_SECS", 600)?;
+        let cycle_span_daa = env_u64("KATPOOL_ZKAS_CYCLE_SPAN_DAA", 3_600)?;
+        let threshold_sompi = i64::try_from(env_u64(
+            "KATPOOL_ZKAS_THRESHOLD_SOMPI",
+            katpool_db::repo::payout::DEFAULT_ZKAS_PAYOUT_THRESHOLD_SOMPI as u64,
+        )?)
+        .context("KATPOOL_ZKAS_THRESHOLD_SOMPI out of range")?;
+        let spend_cap_sompi = match std::env::var("KATPOOL_ZKAS_SPEND_CAP_SOMPI") {
+            Ok(v) => Some(v.parse::<i64>().with_context(|| format!("KATPOOL_ZKAS_SPEND_CAP_SOMPI={v}"))?),
+            Err(_) => None,
+        };
+        let max_sends_per_tick = usize::try_from(env_u64("KATPOOL_ZKAS_MAX_SENDS_PER_TICK", 3)?)
+            .context("KATPOOL_ZKAS_MAX_SENDS_PER_TICK out of range")?;
+        let per_wallet_cap_sompi = i64::try_from(env_u64(
+            "KATPOOL_ZKAS_MAX_PER_WALLET_SOMPI",
+            payout_zkas::DEFAULT_PER_WALLET_CAP_SOMPI as u64,
+        )?)
+        .context("KATPOOL_ZKAS_MAX_PER_WALLET_SOMPI out of range")?;
+        let fee_sompi = env_u64("KATPOOL_ZKAS_PAYOUT_FEE_SOMPI", payout_zkas::DEFAULT_PAYOUT_FEE_SOMPI)?;
+        let anchor_depth = match std::env::var("KATPOOL_ZKAS_ANCHOR_DEPTH") {
+            Ok(v) => Some(v.parse::<u64>().with_context(|| format!("KATPOOL_ZKAS_ANCHOR_DEPTH={v}"))?),
+            Err(_) => None,
+        };
+
+        let zkas_grpc = GrpcClient::connect_with_args(
+            NotificationMode::Direct,
+            cfg.kaspad_url.clone(),
+            None,
+            true,
+            None,
+            false,
+            Some(500_000),
+            Arc::default(),
+        )
+        .await
+        .context("zkas payout gRPC connect")?;
+
+        let sender = payout_zkas::ShieldedPayCli {
+            bin: bin.into(),
+            rpc_server: cfg.kaspad_url.trim_start_matches("grpc://").to_owned(),
+            seed_file: seed_file.into(),
+            fee_sompi,
+            anchor_depth,
+            timeout: payout_zkas::DEFAULT_SEND_TIMEOUT,
+        };
+        let mode = if dry_run {
+            payout_zkas::ExecutionMode::DryRun
+        } else {
+            payout_zkas::ExecutionMode::Live
+        };
+        let engine = payout_zkas::ZkasPayoutEngine::new(
+            db.clone(),
+            Box::new(sender),
+            Box::new(payout_zkas::GrpcChainReader::new(Arc::new(zkas_grpc))),
+            payout_zkas::ZkasPayoutEngineConfig {
+                tick_interval: Duration::from_secs(poll_secs),
+                cycle_span_daa,
+                threshold_sompi,
+                per_wallet_cap_sompi,
+                spend_cap_sompi,
+                mode,
+                max_sends_per_tick,
+                lock_namespace: TREASURY_SPEND_LOCK_NAMESPACE.to_owned(),
+                instance_id: cfg.instance_id.clone(),
+            },
+        )
+        .context("building zkas payout engine")?;
+        info!(
+            dry_run,
+            poll_secs,
+            cycle_span_daa,
+            threshold_sompi,
+            spend_cap_sompi = ?spend_cap_sompi,
+            max_sends_per_tick,
+            "payout-zkas engine enabled"
+        );
+        let rx = shutdown_rx.clone();
+        Some(tokio::spawn(async move { engine.run_loop(rx).await }))
+    } else {
+        info!("payout-zkas engine disabled (set KATPOOL_ZKAS_PAYOUT_ENABLED=true to enable)");
+        None
+    };
+
     // ---- Treasury UTXO consolidation engine (opt-in) ----------------
     // Fourth treasury task. Shares the single `treasury:spend-leader`
     // advisory lock with both payout engines, so only one treasury spender
@@ -815,6 +949,13 @@ async fn main() -> Result<()> {
             Ok(Ok(())) => {}
             Ok(Err(e)) => error!(error = %e, "krc20 payout engine exited with error"),
             Err(e) => error!(error = %e, "krc20 payout engine task join error"),
+        }
+    }
+    if let Some(handle) = zkas_payout_handle {
+        match handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => error!(error = %e, "zkas payout engine exited with error"),
+            Err(e) => error!(error = %e, "zkas payout engine task join error"),
         }
     }
     if let Some(handle) = consolidation_handle {

@@ -580,6 +580,19 @@ impl KaspaApi {
         Some(crate::hasher::calculate_target(fc_block.header.bits as u64))
     }
 
+    /// The ZKas chain hash for a solved merged-mode parent: the committed
+    /// `H_fc`. The AuxPoW rides outside the header hash (dual acceptance), so
+    /// the block that lands on the ZKas chain keeps exactly this hash — it is
+    /// the right handle for `get_current_block_color` and every block-facing
+    /// stat. `None` when not merged (the job header's own hash is the chain
+    /// hash) or when the parent carries no commitment.
+    pub fn merged_chain_hash(&self, parent_block: &Block) -> Option<kaspa_hashes::Hash> {
+        if !self.merged_mining {
+            return None;
+        }
+        crate::merged::committed_h_fc(parent_block)
+    }
+
     /// Submit a block to kaspad.
     ///
     /// Returns:
@@ -1249,6 +1262,10 @@ impl KaspaApi {
 impl KaspaApiTrait for KaspaApi {
     fn merged_fc_target(&self, parent_block: &Block) -> Option<num_bigint::BigUint> {
         KaspaApi::merged_fc_target(self, parent_block)
+    }
+
+    fn merged_chain_hash(&self, parent_block: &Block) -> Option<kaspa_hashes::Hash> {
+        KaspaApi::merged_chain_hash(self, parent_block)
     }
 
     async fn get_block_template(

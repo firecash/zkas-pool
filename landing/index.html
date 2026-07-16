@@ -116,6 +116,9 @@
       </div>
       <table style="margin-top:12px"><thead><tr><th>Worker</th><th>Hashrate</th><th>Shares</th></tr></thead>
         <tbody id="mWorkers"></tbody></table>
+      <h2 style="margin-top:16px">Payout history</h2>
+      <table style="margin-top:8px"><thead><tr><th>When</th><th>Worker</th><th>Amount</th><th>Block</th></tr></thead>
+        <tbody id="mPayouts"></tbody></table>
       <div class="hint" style="margin-top:12px">
         Each block pays <b>60 $zkas</b> straight to your shielded address. <b>Confirmed</b> = final; <b>waiting</b> = still maturing (~10 min). The pool can't see your shielded balance — check it in your <a href="https://wallet.zkas.info">wallet</a>.
       </div>
@@ -233,6 +236,12 @@
       $('mWorkers').innerHTML  = (m.workers||[]).map(w=>`<tr>
         <td>${w.worker||'—'}</td><td>${fmtHash((w.hashrate||0)*1e9)}</td>
         <td>${(w.shares||0).toLocaleString()}</td></tr>`).join('') || '<tr><td colspan="3" class="empty">No active workers.</td></tr>';
+      $('mPayouts').innerHTML  = (m.payouts||[]).map(p=>`<tr>
+        <td>${new Date((p.ts||0)*1000).toLocaleString()}</td>
+        <td>${p.worker||'—'}</td>
+        <td>${(p.amountFc||60).toLocaleString()} $zkas</td>
+        <td class="mono" style="font-size:.85em">${(p.hash||'').slice(0,10)}…${(p.hash||'').slice(-6)}</td></tr>`).join('')
+        || '<tr><td colspan="4" class="empty">No payouts recorded yet — history starts collecting from now (each confirmed block = 60 $zkas paid directly to your address).</td></tr>';
     }catch{ $('minerEmpty').style.display='block'; $('minerResult').style.display='none'; }
   }
   $('lookupBtn').addEventListener('click',lookup);

@@ -38,6 +38,7 @@ katpool-secrets = { path = "../crates/katpool-secrets" }
 accountant = { path = "../accountant" }
 payout-kas = { path = "../payout-kas" }
 payout-krc20 = { path = "../payout-krc20" }
+payout-zkas = { path = "../payout-zkas" }
 api = { path = "../api" }
 # Bridge — embedded as a library so the unified runtime can run
 # both the stratum server and the accountant in one process.

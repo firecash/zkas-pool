@@ -11,8 +11,9 @@ accounting, and **shielded `$zkas` payouts** — backed by `PostgreSQL`.
 
 Because ZKas's PoW is kHeavyHash (byte-identical to Kaspa), the stratum/mining path
 is unchanged from a Kaspa pool. What is different is **payout**: ZKas has no
-transparent UTXOs — the coinbase reward is minted as an Orchard shielded note — so the
-pool holds a **shielded treasury** and miners **claim** their balance (see below).
+transparent UTXOs — the coinbase reward is minted as an Orchard shielded note — so
+custodial mode requires a **shielded treasury** with automatic shielded payouts
+(see below).
 
 > The internal crate and binary names are still `katpool` / `katpool-*`, inherited from
 > the upstream fork; they are not renamed to avoid churning 60+ patched `kaspa-*` deps.
@@ -20,11 +21,13 @@ pool holds a **shielded treasury** and miners **claim** their balance (see below
 
 ## Status
 
-> **Under construction.** The stratum **bridge** connects to a ZKas node and mines
-> native + AuxPoW solutions today. The **shielded payout path is being built** (shielded
-> treasury → PROP accounting → cliff vesting → signature-authenticated claim), replacing
-> the upstream transparent-KAS/KRC-20 payout engines, which do **not** apply to ZKas.
-> Do not run this pool for real payouts until the shielded claim path lands.
+> **Live today: direct (solo-style) payout.** The stratum **bridge** connects to a ZKas
+> node and mines native + AuxPoW solutions; each block template pays the coinbase to the
+> **address the finding miner authorized with**, so rewards land on-chain directly —
+> the pool holds nothing. The **custodial path is being built** (shielded treasury →
+> PROP accounting → automatic shielded payouts), replacing the upstream
+> transparent-KAS/KRC-20 payout engines, which do **not** apply to ZKas.
+> Do not enable custodial mode (`coinbase_address_override`) until that path lands.
 
 ## At a glance
 
@@ -34,33 +37,26 @@ pool holds a **shielded treasury** and miners **claim** their balance (see below
 |---|---|
 | [`bridge/`](bridge/) | Forked `rusty-kaspa` stratum bridge. Accepts ASIC stratum, validates shares, submits native + AuxPoW blocks to a ZKas node. **Works today.** |
 | [`accountant/`](accountant/) | Subscribes to share + block events, computes PROP allocations, writes per-miner balances. |
-| [`payout-kas/`](payout-kas/) | **Upstream transparent-KAS payout — NOT used by ZKas** (no transparent UTXOs). Being replaced by the shielded treasury payout. |
-| [`payout-krc20/`](payout-krc20/) | **Upstream NACHO KRC-20 rebate — not applicable to ZKas.** |
+| [`payout-zkas/`](payout-zkas/) | **The ZKas payout engine.** Periodic full-balance sweeps from the shielded treasury — one Orchard tx per recipient via the `shielded-pay` CLI, single-leader, idempotent, spend-capped, with an in-flight double-pay latch. |
+| [`payout-kas/`](payout-kas/) | **Upstream transparent-KAS payout — NOT used by ZKas** (no transparent UTXOs). Kept for upstream parity; superseded by `payout-zkas`. |
+| [`payout-krc20/`](payout-krc20/) | **Upstream NACHO KRC-20 rebate — not applicable to ZKas** (rebate BPS are zeroed). |
 | [`api/`](api/) | Read-only `axum` HTTP API. Serves **aggregate** pool stats only; per-miner stats are withheld for miner privacy. |
 | [`katpool/`](katpool/) | Main wiring binary that runs the active components in one process. |
 | [`crates/`](crates/) | Shared libraries: `katpool-domain`, `-db`, `-config`, `-metrics`, `-storagemass`, `-idempotency`, `-telemetry`, `-secrets`, `-fault-injection`. |
 
 ## Payout model (ZKas)
 
-ZKas payouts are **shielded and custodial-until-claim**:
+**Today (live): direct payout.** The pool runs without a coinbase override, so every
+block template pays the coinbase **directly to the address the finding miner mined
+with**. Rewards are minted as shielded notes to the miner's own `zkas:` address by the
+chain itself — the pool is never in custody and there is nothing to claim.
 
-- The pool mines to its **own shielded (`$zkas`) address** and tracks each miner's
-  PROP balance in Postgres, keyed by the miner's payout shielded address.
-- **Cliff vesting, per block reward.** Each reward vests on a 10-day cliff: **before 10
-  days it pays 50%, at or after 10 days it pays 100%.** The withheld 50% on an early
-  claim goes to the pool operator treasury (configurable).
-- **After 10 days: auto-sent, no action needed.** A scheduled sweep pays every reward
-  that has passed the cliff to the miner's `zkas:` address at 100% — **no signature,
-  no claim, nothing for the miner to do.**
-- **Before 10 days: signed early claim (optional).** A miner who wants their balance
-  *early* requests a challenge and signs it with their shielded address key (the same
-  sign/verify as `shielded-pay`); the pool verifies against the payout address and sends
-  the vested balance (matured rewards at 100%, still-vesting at 50%). **Signing is only
-  ever needed to claim early** — it is a choice to trade 50% for speed, never a
-  requirement to get paid. No mining password is required.
-
-See `accountant/src/payout.rs` (the `AutoSweep` vs `SignedClaim` triggers) and
-`accountant/src/vesting.rs` (the split) for the exact policy.
+**Custodial mode (in development):** the pool mines to its **own shielded (`$zkas`)
+treasury address** and tracks each miner's PROP balance in Postgres, keyed by the
+miner's payout shielded address. A scheduled sweep then pays each miner's **full
+accrued balance** (above a dust threshold) to their `zkas:` address automatically —
+**no signature, no claim, no vesting, nothing for the miner to do.** No mining
+password is required.
 
 ## Connecting a miner
 

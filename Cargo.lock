@@ -4250,6 +4250,7 @@ dependencies = [
  "katpool-telemetry",
  "payout-kas",
  "payout-krc20",
+ "payout-zkas",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
@@ -5383,6 +5384,25 @@ dependencies = [
  "tokio",
  "tracing",
  "wiremock",
+]
+
+[[package]]
+name = "payout-zkas"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "kaspa-grpc-client",
+ "kaspa-hashes",
+ "kaspa-rpc-core",
+ "katpool-db",
+ "katpool-domain",
+ "katpool-idempotency",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

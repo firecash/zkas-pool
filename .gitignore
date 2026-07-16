@@ -67,3 +67,10 @@ bin/
 
 # local dev: path override to firecash-rusty checkout (not for CI/others)
 .cargo/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Redactor runtime state
+redactor-payout-history.json

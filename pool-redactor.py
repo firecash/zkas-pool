@@ -13,6 +13,7 @@ Bind loopback; nginx proxies it.
 """
 import collections
 import json
+import os
 import re
 import threading
 import time
@@ -48,9 +49,18 @@ def _labels(s):
     return dict(re.findall(r'(\w+)="([^"]*)"', s))
 
 
-def _agg_max(rx, text, out):
-    """Aggregate a per-worker counter keyed by (wallet, worker), taking the max across
-    duplicate label series (katpool emits a series with and without the miner label)."""
+def _agg_sessions(rx, text, out):
+    """Aggregate a per-worker counter keyed by (wallet, worker).
+
+    katpool emits duplicate series for one connection (with and without the
+    `miner` label) AND a brand-new series per (re)connect — the `ip` label
+    carries the source ip:port, which changes every session. So: take the MAX
+    within one (wallet, worker, ip) session (dedupes the label variants) and
+    SUM across sessions. The old max-only aggregation froze a miner's shares/
+    blocks at the previous session's value after a stop/resume (new series
+    restarts at 0 and never exceeds the old max) — the live "numbers never
+    change again" bug."""
+    per_session = {}
     for labels, val in rx.findall(text):
         lb = _labels(labels)
         w, wk = lb.get("wallet"), lb.get("worker")
@@ -60,9 +70,12 @@ def _agg_max(rx, text, out):
             v = float(val)
         except ValueError:
             continue
+        sess = (w, wk, lb.get("ip") or "")
+        if v > per_session.get(sess, 0.0):
+            per_session[sess] = v
+    for (w, wk, _ip), v in per_session.items():
         k = (w, wk)
-        if v > out.get(k, 0.0):
-            out[k] = v
+        out[k] = out.get(k, 0.0) + v
 
 
 # ---- shared state, refreshed by a background sampler --------------------------
@@ -73,6 +86,74 @@ _state = {
     "bridgeUptime": 0, "workers": [], "blocks": [],
 }
 _hist = {}   # (wallet, worker) -> deque[(ts, cumulative_diff)] over WINDOW_SECS
+
+# ---- per-wallet payout history (solo model: 1 confirmed block = 60 ZKAS paid
+# by the chain to that wallet). Fed from the bridge's recent-blocks list and
+# persisted to disk so it survives redactor AND bridge restarts. ------------
+PAYOUT_HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "redactor-payout-history.json")
+PAYOUT_HISTORY_CAP = 200        # per wallet
+_payouts_lock = threading.Lock()
+_payouts = {}                   # wallet -> [{"ts","worker","hash"}] newest LAST
+_payouts_seen = set()           # block hashes already recorded
+_payouts_dirty = False
+
+
+def _payouts_load():
+    global _payouts, _payouts_seen
+    try:
+        with open(PAYOUT_HISTORY_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            _payouts = {w: list(v)[-PAYOUT_HISTORY_CAP:] for w, v in data.items()
+                        if isinstance(v, list)}
+            _payouts_seen = {e.get("hash") for v in _payouts.values() for e in v
+                             if isinstance(e, dict) and e.get("hash")}
+    except Exception:
+        _payouts, _payouts_seen = {}, set()
+
+
+def _payouts_record(blocks):
+    """Append new bridge blocks (wallet, worker, hash, timestamp) to history."""
+    global _payouts_dirty
+    with _payouts_lock:
+        for b in blocks or []:
+            h, w = b.get("hash"), b.get("wallet")
+            if not h or not w or h in _payouts_seen:
+                continue
+            ts = b.get("timestamp")
+            try:
+                ts = int(float(ts))
+            except (TypeError, ValueError):
+                ts = int(time.time())
+            lst = _payouts.setdefault(w, [])
+            lst.append({"ts": ts, "worker": b.get("worker") or "—", "hash": h})
+            del lst[:-PAYOUT_HISTORY_CAP]
+            _payouts_seen.add(h)
+            _payouts_dirty = True
+
+
+def _payouts_save():
+    global _payouts_dirty
+    with _payouts_lock:
+        if not _payouts_dirty:
+            return
+        snap = {w: list(v) for w, v in _payouts.items()}
+        _payouts_dirty = False
+    tmp = PAYOUT_HISTORY_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(snap, f)
+        os.replace(tmp, PAYOUT_HISTORY_FILE)
+    except Exception:
+        pass
+
+
+def payout_history(wallet, limit=50):
+    with _payouts_lock:
+        lst = list(_payouts.get(wallet, []))
+    return [{"ts": e["ts"], "worker": e["worker"], "hash": e["hash"],
+             "amountFc": REWARD_FC} for e in reversed(lst[-limit:])]
 
 
 def sample():
@@ -86,11 +167,11 @@ def sample():
         return
 
     diff, shares, found, mined, pending = {}, {}, {}, {}, {}
-    _agg_max(RX_DIFF, text, diff)
-    _agg_max(RX_SHARES, text, shares)
-    _agg_max(RX_FOUND, text, found)
-    _agg_max(RX_MINED, text, mined)
-    _agg_max(RX_PENDING, text, pending)
+    _agg_sessions(RX_DIFF, text, diff)
+    _agg_sessions(RX_SHARES, text, shares)
+    _agg_sessions(RX_FOUND, text, found)
+    _agg_sessions(RX_MINED, text, mined)
+    _agg_sessions(RX_PENDING, text, pending)
 
     def _gmax(rx):
         vals = [float(v) for v in rx.findall(text)]
@@ -105,7 +186,12 @@ def sample():
     bridge_by_key = {}
     try:
         braw = urllib.request.urlopen("http://127.0.0.1:3033/api/stats", timeout=5).read().decode()
-        for bw in (json.loads(braw).get("workers") or []):
+        bjson = json.loads(braw)
+        # Record newly found blocks into the persistent per-wallet payout
+        # history (solo model: each confirmed block = one 60-ZKAS payout).
+        _payouts_record(bjson.get("blocks") or [])
+        _payouts_save()
+        for bw in (bjson.get("workers") or []):
             w = bw.get("wallet")
             wk = bw.get("worker") or "—"
             if not w:
@@ -141,9 +227,12 @@ def sample():
         workers.append({
             "worker": worker or "—",
             "wallet": wallet,
-            "hashrate": hr_final,               # GH/s
+            "hashrate": hr_final if b else 0.0,  # a dead session has no live rate
             "shares": int(shares.get(k, 0)) or (b["shares"] if b else 0),
             "difficulty": b["diff"] if b else None,
+            # Prometheus counters persist for every session since bridge start;
+            # only workers the bridge currently tracks are actually connected.
+            "online": b is not None,
         })
     # Also surface workers that are CONNECTED at the bridge but have not landed a
     # valid share yet (e.g. a small rig stuck on too-high difficulty, or one that
@@ -160,6 +249,7 @@ def sample():
             "shares": b["shares"],
             "difficulty": b["diff"],
             "warmingUp": b["hr"] <= 0,
+            "online": True,
         })
 
     # drop workers gone since last scrape
@@ -174,10 +264,10 @@ def sample():
             "networkHashrate": _gmax(RX_NETHR),
             "networkBlockCount": int(_gmax(RX_NETBLK)),
             "networkDifficulty": _gmax(RX_NETDIFF),
-            # A worker is "active" if it is present in the current scrape (connected and
-            # tracked), not only if we've computed a hashrate yet — computing a rate needs
-            # two samples, so requiring hashrate>0 undercounts right after a (re)connect.
-            "activeWorkers": len(workers),
+            # A worker is "active" if the bridge currently tracks its connection.
+            # Prom counter series persist for every session since bridge start, so
+            # counting raw series keys inflates this with long-disconnected rigs.
+            "activeWorkers": sum(1 for w in workers if w.get("online")),
             "totalShares": int(sum(shares.values())),
             "totalBlocks": blocks_found,
             "bridgeUptime": int(now - START),
@@ -244,7 +334,8 @@ def redact(stats, bbw):
             "shares": w.get("shares"),
             "difficulty": w.get("difficulty"),
             "warmingUp": bool(w.get("warmingUp")),
-        } for w in sorted(workers, key=lambda x: -(x.get("hashrate") or 0))],
+        } for w in sorted(workers, key=lambda x: -(x.get("hashrate") or 0))
+          if w.get("online")],
         "blocks": [],
     }
 
@@ -260,18 +351,22 @@ def miner(address, stats, bbw):
         "found": bool(workers) or address in bbw,
         "workers": [{
             "worker": w.get("worker") or "—",
-            "hashrate": w.get("hashrate"),   # GH/s
+            "hashrate": w.get("hashrate"),   # GH/s (0 for offline sessions)
             "shares": w.get("shares") or 0,
             "difficulty": w.get("difficulty"),
             "warmingUp": bool(w.get("warmingUp")),
+            "online": bool(w.get("online")),
         } for w in workers],
-        "totalHashrate": sum((w.get("hashrate") or 0) for w in workers),  # GH/s
+        "totalHashrate": sum((w.get("hashrate") or 0) for w in workers if w.get("online")),  # GH/s
         "totalShares": sum((w.get("shares") or 0) for w in workers),
         "blocksFound": blk["found"],
         "blocksConfirmed": confirmed,
         "blocksPending": pending,
         "paidFc": confirmed * REWARD_FC,
         "pendingFc": pending * REWARD_FC,
+        # Per-block payout history (solo model: each confirmed block paid
+        # 60 ZKAS straight to this wallet by the chain). Newest first.
+        "payouts": payout_history(address),
     }
 
 
@@ -307,6 +402,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    _payouts_load()  # payout history survives redactor + bridge restarts
     sample()  # prime one sample so the first request isn't empty
     threading.Thread(target=sampler_loop, daemon=True).start()
     ThreadingHTTPServer(LISTEN, Handler).serve_forever()

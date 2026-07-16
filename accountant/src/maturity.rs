@@ -61,14 +61,17 @@ pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(15);
 
 /// Default coinbase maturity in DAA-score depth.
 ///
-/// Matches `kaspa_consensus_core` for mainnet and testnet-10:
-/// `BlockrateParams::coinbase_maturity = BPS(10) × COINBASE_MATURITY_SECONDS(100) = 1000`.
-/// A coinbase UTXO is spendable when
-/// `virtual_daa_score ≥ utxo.block_daa_score + coinbase_maturity`.
-pub const DEFAULT_COINBASE_MATURITY: u64 = 1000;
+/// Matches the ZKas mainnet consensus parameter:
+/// `BlockrateParams::coinbase_maturity = BPS(1) × COINBASE_MATURITY_SECONDS(100) = 100`
+/// (the chain runs at 1 block/second — see `consensus/core/src/config/bps.rs`
+/// in the rusty-kaspa fork). A coinbase reward is spendable when
+/// `virtual_daa_score ≥ reward.block_daa_score + coinbase_maturity`.
+/// Upstream Kaspa mainnet/testnet-10 (10 BPS) would be 1000.
+pub const DEFAULT_COINBASE_MATURITY: u64 = 100;
 
 /// Default DAA-window span for PROP allocation, in DAA scores.
-/// 600 DAA ≈ 60 seconds at 10 BPS. See ADR-0014.
+/// 600 DAA ≈ 10 minutes at ZKas's 1 BPS — a trailing window long enough
+/// to smooth share variance across many block rewards. See ADR-0014.
 pub const DEFAULT_WINDOW_DAA_SPAN: u64 = 600;
 
 /// Default per-sweep batch limit (block transitions + reward

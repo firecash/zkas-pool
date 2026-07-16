@@ -15,6 +15,7 @@ members = [
     "accountant",
     "payout-kas",
     "payout-krc20",
+    "payout-zkas",
     "api",
     "katpool",
     # Forked stratum bridge (one-time source vendor from rusty-kaspa v1.1.0;
