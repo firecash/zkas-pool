@@ -2,7 +2,7 @@
 //!
 //! The single unverified assumption in the merged design: *can this bridge's
 //! (ZKas-fork-typed) gRPC client fetch a block template from the upstream
-//! **Kaspa** node, convert it to a `Block`, and does our `FCMM || H_fc` commitment
+//! **Kaspa** node, convert it to a `Block`, and does our `ZKMM || H_fc` commitment
 //! survive verbatim in the real Kaspa coinbase?* Everything downstream (dual-target
 //! share check, dual submit) is mechanical once this holds.
 //!
@@ -63,7 +63,7 @@ async fn merged_derisk_kaspa_template_carries_commitment() {
 
     // Does our commitment survive in the real Kaspa coinbase?
     let recovered = kaspa_stratum_bridge::merged::committed_h_fc(&block)
-        .expect("FCMM||H_fc commitment must be present in the Kaspa coinbase payload");
+        .expect("ZKMM||H_fc commitment must be present in the Kaspa coinbase payload");
     assert_eq!(recovered, h_fc, "recovered commitment must equal H_fc we asked kaspad to embed");
 
     // The aux binding half (commitment + coinbase Merkle inclusion) must verify against

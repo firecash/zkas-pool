@@ -538,7 +538,7 @@ impl KaspaApi {
     }
 
     /// Fetch a real Kaspa block template from the upstream node, paying our `kaspa:`
-    /// address and embedding `FCMM || h_fc` in the coinbase `extra_data`, so a solved
+    /// address and embedding `ZKMM || h_fc` in the coinbase `extra_data`, so a solved
     /// parent is a valid Kaspa block that both (a) can be submitted to Kaspa for KAS and
     /// (b) proves the ZKas block via AuxPoW. Errs if the Kaspa client/pay address is
     /// unset (caller falls back to a synthetic parent).

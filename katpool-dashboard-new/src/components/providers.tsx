@@ -37,6 +37,13 @@ export function Providers({ children }: { children: ReactNode }) {
             // only fires when the cached data is older than 10s.
             refetchOnWindowFocus: true,
             refetchOnReconnect: true,
+            // Live updates without a page reload: poll every 5s so hashrate,
+            // workers, blocks, shares, height etc. tick in real time. Browsers
+            // pause this while the tab is backgrounded; `refetchOnWindowFocus`
+            // above catches the app back up the moment you return. `staleTime: 0`
+            // means each interval actually refetches, and `keepPreviousData`
+            // holds the panel so the refresh is flicker-free.
+            refetchInterval: 5_000,
             // Keep the last good data on screen across refetches and range
             // changes instead of collapsing to skeletons/errors.
             placeholderData: keepPreviousData,

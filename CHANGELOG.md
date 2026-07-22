@@ -22,7 +22,7 @@ backward-incompatible ways at every minor bump.
 
 - **Real dual-chain merged mining tested live (2026-07-15).** Enabled via
   `ZKAS_MERGED_MINING=1` + `ZKAS_KASPA_NODE` + `ZKAS_KASPA_PAY`: the bridge pulls
-  a real Kaspa parent template, embeds `FCMM||H_fc`, and submits solved parents
+  a real Kaspa parent template, embeds `ZKMM||H_fc`, and submits solved parents
   to both Kaspa (KAS) and ZKas (aux). Verified: ZKas blocks accepted by the node
   in merged mode; graceful fallback to synthetic parent (ZKas-only) while the
   Kaspa node is still in IBD. Docs updated (`help.txt` §6, §9).
