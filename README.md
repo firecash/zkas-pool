@@ -3,7 +3,7 @@
 [![License: MIT or Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Rust 1.91+](https://img.shields.io/badge/rust-1.91%2B-orange.svg)](Cargo.toml)
 
-Rust-first **[ZKas](https://github.com/firecash/firecash-rusty)** mining pool — a
+Rust-first **[ZKas](https://github.com/firecash/zkas-rusty)** mining pool — a
 fork of [Nacho-the-Kat/katpool](https://github.com/Nacho-the-Kat/katpool) retargeted at
 the shielded-by-default ZKas chain. A single-binary deployment that owns stratum,
 share validation, block submission (native **and** AuxPoW merged mining), PROP
@@ -77,11 +77,11 @@ Prerequisites: Rust 1.91+ / edition 2024 (pinned via `rust-version` in
 `cargo-deny` / `cargo-audit`.
 
 The patched `kaspa-*` / ZKas crates are pulled straight from the
-[`firecash-rusty`](https://github.com/firecash/firecash-rusty) fork over git — you do
+[`firecash-rusty`](https://github.com/firecash/zkas-rusty) fork over git — you do
 **not** need a local rusty-kaspa checkout at any particular path (Cargo fetches and pins it).
 
 ```bash
-git clone https://github.com/firecash/firecash-pool.git
+git clone https://github.com/firecash/zkas-pool.git
 cd firecash-pool
 
 # Verify your environment matches CI gates
