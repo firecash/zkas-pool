@@ -86,7 +86,7 @@ export function useActiveMinersHistory(args: RangeArgs) {
   );
 }
 
-// useLeaderboard removed — FireCash does not expose per-miner/top-miner rankings.
+// useLeaderboard removed — ZKas does not expose per-miner/top-miner rankings.
 
 export function useFirmware(windowSecs?: number) {
   return useBff<FirmwareBreakdown>(

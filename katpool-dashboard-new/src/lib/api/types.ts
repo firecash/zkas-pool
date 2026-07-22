@@ -150,7 +150,7 @@ export interface CycleDetailPage {
   recipients: CycleRecipientView[];
 }
 
-// LeaderboardEntryView / LeaderboardResponse removed — FireCash exposes no
+// LeaderboardEntryView / LeaderboardResponse removed — ZKas exposes no
 // per-miner or top-miner rankings (miner privacy).
 
 export interface ActiveMinersPointView {

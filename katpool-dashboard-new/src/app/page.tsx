@@ -13,7 +13,7 @@ import { HalvingModule } from "@/features/network/halving-module";
 
 export const metadata: Metadata = {
   description:
-    "Live FireCash mining pool overview: real-time pool and network hashrate, active miners, blocks found, and payouts. Miner privacy: no per-miner or top-miner rankings.",
+    "Live ZKas mining pool overview: real-time pool and network hashrate, active miners, blocks found, and payouts. Miner privacy: no per-miner or top-miner rankings.",
   alternates: { canonical: "/" },
 };
 

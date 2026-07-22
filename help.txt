@@ -9,7 +9,7 @@ a kHeavyHash (Kaspa) pool and want to add ZKas.
 
 
 -------------------------------------------------------------------------------
- 1. WHAT FIRECASH IS
+ 1. WHAT ZKAS IS
 -------------------------------------------------------------------------------
 
   - A fork of rusty-kaspa (kaspad v2.0.1 lineage). Same GHOSTDAG / BlockDAG
@@ -22,7 +22,7 @@ a kHeavyHash (Kaspa) pool and want to add ZKas.
     solves Kaspa headers solves ZKas headers with zero changes.
   - Target block rate: 1 BPS. Coinbase emission: 60 $zkas per block (at 1 BPS),
     i.e. 6e9 sompi/block (1 $zkas = 1e8 sompi). The initial reward halves every
-    3 months, caught by a two-step perpetual tail (6 -> 3 $zkas/block). Ticker:
+    3 months, caught by a two-step perpetual tail (6 -> 0.6 $zkas/block). Ticker:
     $zkas.
   - Address format: bech32 with HRP "zkas:" (mainnet), e.g.
     zkas:pyfjy228...  (testnet "zkastest:", devnet "zkasdev:",
@@ -37,7 +37,7 @@ a kHeavyHash (Kaspa) pool and want to add ZKas.
 
 
 -------------------------------------------------------------------------------
- 2. THE TWO SOLUTION TYPES FIRECASH ACCEPTS
+ 2. THE TWO SOLUTION TYPES ZKAS ACCEPTS
 -------------------------------------------------------------------------------
 
 A ZKas block is valid if EITHER of these holds:
@@ -54,7 +54,7 @@ A ZKas block is valid if EITHER of these holds:
       cryptographically bound to this ZKas block. Accepted ONLY once merged
       mining is active (see section 4).
 
-Key point on difficulty: the AuxPoW is checked against FIRECASH'S OWN target
+Key point on difficulty: the AuxPoW is checked against ZKAS'S OWN target
 (its own DAA retarget), NOT Kaspa's. A hash that fails Kaspa's hard target
 routinely clears ZKas's easier one, so merged mining augments ZKas
 security at essentially zero marginal cost to a Kaspa miner.
@@ -138,7 +138,7 @@ Binding chain (what the verifier walks):
      "Exactly once" is enforced (ambiguous/duplicate commitments are rejected,
      erring safe).
 
-  3. Mine the parent header with kHeavyHash against FIRECASH'S target (parent
+  3. Mine the parent header with kHeavyHash against ZKAS'S target (parent
      bits = ZKas's bits). Because that target is easier than Kaspa's, most
      Kaspa-failing hashes still qualify here.
 

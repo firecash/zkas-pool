@@ -1,5 +1,5 @@
-# FireCash mining pool — public stratum bridge.
-# One shared FireCash node; several stratum ports at different fixed
+# ZKas mining pool — public stratum bridge.
+# One shared ZKas node; several stratum ports at different fixed
 # difficulties plus an auto (vardiff) port, so any miner picks the right one.
 kaspad_address: "127.0.0.1:16110"
 block_wait_time: 500
