@@ -21,14 +21,21 @@ a kHeavyHash (Kaspa) pool and want to add ZKas.
     are an untouched fork, so any Kaspa miner / ASIC / hashing library that
     solves Kaspa headers solves ZKas headers with zero changes.
   - Target block rate: 1 BPS. Coinbase emission: 60 $zkas per block (at 1 BPS),
-    i.e. 6e9 sompi/block (1 $zkas = 1e8 sompi). The initial reward halves every
-    3 months, caught by a two-step perpetual tail (6 -> 0.6 $zkas/block). Ticker:
-    $zkas.
+    i.e. 6e9 sompi/block (1 $zkas = 1e8 sompi). Of this a CONSENSUS-ENFORCED 5%
+    dev fee (3 $zkas) is appended as one extra coinbase output; the finding miner
+    receives the remaining 57 $zkas. The initial reward halves every 3 months,
+    caught by a perpetual tail. Ticker: $zkas.
   - Address format: bech32 with HRP "zkas:" (mainnet), e.g.
-    zkas:pyfjy228...  (testnet "zkastest:", devnet "zkasdev:",
-    simnet "zkassim:"; legacy firecash* prefixes stay valid). Network id / datadir name stays "firecash-mainnet" (wire/disk identity, not display).
-  - Default ports: node gRPC 16110, P2P 16111 (same numbering as Kaspa's
-    16110/16111 — run ZKas on its own host or remap if co-locating).
+    zkas:pyfjy228...  (testnet "zkastest:", devnet "zkasdev:", simnet "zkassim:").
+    Addresses are chain-specific: a "zkas:" address is not interchangeable with a
+    "kaspa:" or an old "firecash:" one (the HRP is folded into the bech32
+    checksum). Network id / datadir name is "zkas-mainnet" (wire/disk identity,
+    not display).
+  - Ports: the ZKas binary DEFAULTS to its own port block — node gRPC 16810,
+    P2P 16811 — so a ZKas node and a co-located Kaspa parent never clash. The
+    reference pool overrides these, running its ZKas node with
+    --rpclisten 127.0.0.1:16110 --listen 0.0.0.0:16111; its bridge then connects
+    on 16110 and the node peers on 16111.
 
   Because the PoW is identical to Kaspa's, standing up a ZKas pool is
   exactly like standing up a Kaspa pool: get a block template from a ZKas
@@ -83,6 +90,13 @@ No special support needed — treat it like a Kaspa pool:
      shielded coinbase note; payout accounting is handled by the pool, not the
      miner — the miner only ever sees plain headers.)
 
+  Coinbase note: the ZKas coinbase carries a mandatory 5% dev-fee output that
+  consensus appends and re-checks. Submit the node's block-template coinbase
+  as-is. A pool that rebuilds the coinbase must reproduce it exactly, dev-fee
+  output included, or the block is rejected ("coinbase transaction is not built
+  as expected" for native; "block has invalid proof-of-work" for merged — see
+  section 5).
+
 This path is fully live and is what the network runs on.
 
 
@@ -129,11 +143,24 @@ Binding chain (what the verifier walks):
      over the explicit header fields and EXCLUDES the aux_pow data, so it is
      stable no matter what parent later carries it.
 
+     CRITICAL (coinbase / dev fee): H_fc commits the ZKas coinbase through
+     hash_merkle_root, and the ZKas coinbase carries the mandatory 5% dev-fee
+     output (section 1). Use the node's block-template coinbase VERBATIM. If you
+     rebuild the coinbase yourself, you MUST reproduce the node's expected
+     coinbase EXACTLY — including the trailing dev-fee output — and bind and
+     submit that SAME block. Otherwise the H_fc you commit into the parent will
+     not equal the hash of the block the node validates, verify_aux_pow's binding
+     check fails, and — since a merged block has no native PoW to fall back on —
+     submit_block returns "block has invalid proof-of-work". (A NATIVE block with
+     a wrong coinbase instead fails later with "coinbase transaction is not built
+     as expected".) This is the single most common cause of a rejected merged
+     block after the dev fee was added.
+
   2. Embed the commitment in the PARENT block's coinbase. The parent coinbase
      payload (the miner-writable extra_data slot — the only field you can set in
      a real Kaspa block without changing Kaspa) must contain, exactly once:
 
-         MERGE_MINE_MAGIC (4 bytes, ASCII "FCMM") || H_fc (32 bytes)
+         MERGE_MINE_MAGIC (4 bytes, ASCII "ZKMM") || H_fc (32 bytes)
 
      "Exactly once" is enforced (ambiguous/duplicate commitments are rejected,
      erring safe).
@@ -146,7 +173,7 @@ Binding chain (what the verifier walks):
 
          AuxPow {
              parent_header:         Header,        // the mined parent
-             parent_coinbase:       Transaction,   // carries FCMM||H_fc
+             parent_coinbase:       Transaction,   // carries ZKMM||H_fc
              coinbase_merkle_branch: Vec<Hash>,    // coinbase (leaf 0) -> root
          }
 
@@ -185,7 +212,7 @@ configured entirely by environment variables on the stratum bridge:
   REAL DUAL-CHAIN MERGED MINING IS NOW WIRED (tested live 2026-07-15):
   When ZKAS_KASPA_NODE + ZKAS_KASPA_PAY are set, the bridge pulls the parent
   template from the REAL Kaspa node (fetch_kaspa_parent in kaspaapi.rs), embeds
-  FCMM||H_fc in its coinbase extra_data, and a solved parent is submitted to
+  ZKMM||H_fc in its coinbase extra_data, and a solved parent is submitted to
   BOTH chains — Kaspa (earning KAS at ZKAS_KASPA_PAY) and ZKas (as an aux block).
   One hash, two rewards. Verified on the live network: ZKas blocks accepted by
   the node with merged mode enabled and a real Kaspa parent.
@@ -218,7 +245,7 @@ configured entirely by environment variables on the stratum bridge:
   - CAVEAT:         the plain gRPC RpcBlockHeader->Header conversion currently
                     sets aux_pow = None (drops aux). Submit merged blocks via the
                     RpcRawHeader / wRPC path, not the bare gRPC header path.
-  - Constants:      MERGE_MINE_MAGIC = b"FCMM". Commitment = the 32-byte H_fc.
+  - Constants:      MERGE_MINE_MAGIC = b"ZKMM". Commitment = the 32-byte H_fc.
 
   Source of truth:
     consensus/core/src/auxpow.rs   — AuxPow type, commitment scan, inclusion
