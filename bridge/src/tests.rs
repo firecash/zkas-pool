@@ -1132,6 +1132,7 @@ mod integration {
             stratum_port: ":0".to_string(), // Use port 0 for testing
             stratum_ports: vec![],
             proxy_protocol: false,
+            kaspa_common_protocol: false,
             kaspad_address: rpc_address.clone(),
             prom_port: String::new(),
             print_stats: false,
@@ -1221,6 +1222,7 @@ mod integration {
             stratum_port: ":0".to_string(),
             stratum_ports: vec![],
             proxy_protocol: false,
+            kaspa_common_protocol: false,
             kaspad_address: rpc_address.clone(),
             prom_port: String::new(),
             print_stats: false,

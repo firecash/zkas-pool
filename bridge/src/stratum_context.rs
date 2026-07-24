@@ -519,6 +519,21 @@ impl StratumContext {
         Ok(())
     }
 
+    /// Send a Stratum v1 server notification exactly as used by the major
+    /// Kaspa pools: explicit null id, no `jsonrpc` member.
+    pub async fn send_v1_notification(&self, method: &str, params: Vec<serde_json::Value>) -> Result<(), ErrorDisconnected> {
+        if self.disconnecting.load(Ordering::Acquire) {
+            return Err(ErrorDisconnected);
+        }
+        let notification = serde_json::json!({
+            "id": serde_json::Value::Null,
+            "method": method,
+            "params": params,
+        });
+        let data = format!("{}\n", serde_json::to_string(&notification).map_err(|_| ErrorDisconnected)?);
+        self.write_data(data.as_bytes()).await
+    }
+
     /// Write data to the connection with backoff
     async fn write_data(&self, data: &[u8]) -> Result<(), ErrorDisconnected> {
         // Check if already disconnected

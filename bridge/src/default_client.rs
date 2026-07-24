@@ -101,7 +101,7 @@ pub async fn handle_subscribe(
     tracing::info!("[HANDSHAKE] subscribe parsed app='{}' from {}:{}", remote_app, ctx.remote_addr, ctx.remote_port);
 
     // Auto-detect miner type and assign appropriate extranonce
-    if let Some(handler) = client_handler {
+    if let Some(ref handler) = client_handler {
         handler.assign_extranonce_for_miner(&ctx, &remote_app);
     }
 
@@ -112,6 +112,7 @@ pub async fn handle_subscribe(
     // Check if this is a Bitmain miner - use same detection logic as assign_extranonce_for_miner
     // (case-insensitive matching for consistency)
     let remote_app_lower = remote_app.to_lowercase();
+    let kaspa_common_protocol = client_handler.as_ref().is_some_and(|handler| handler.kaspa_common_protocol());
     let is_bitmain =
         remote_app_lower.contains("godminer") || remote_app_lower.contains("bitmain") || remote_app_lower.contains("antminer");
     tracing::debug!("[SUBSCRIBE] Detected miner type - Remote app: '{}', Is Bitmain: {}", remote_app, is_bitmain);
@@ -122,7 +123,7 @@ pub async fn handle_subscribe(
         tracing::debug!("[SUBSCRIBE] Current extranonce: '{}' (length: {} bytes)", extranonce, extranonce.len() / 2);
     }
 
-    let response = if is_bitmain {
+    let response = if is_bitmain && !kaspa_common_protocol {
         // Bitmain format - extranonce in subscribe response
         let extranonce2_size = 8 - (extranonce.len() / 2);
         tracing::debug!("[SUBSCRIBE] ===== USING BITMAIN SUBSCRIBE FORMAT FOR {} =====", ctx.remote_addr);
@@ -153,6 +154,41 @@ pub async fn handle_subscribe(
     tracing::debug!("[SUBSCRIBE] Sending subscribe response to {}: {}", ctx.remote_addr, response_json);
 
     ctx.reply(response).await.map_err(|e| format!("failed to send response to subscribe: {}", e))?;
+
+    if kaspa_common_protocol {
+        let handler = client_handler.as_ref().ok_or("Kaspa Common protocol requires a client handler")?;
+        let extranonce2_size = 8usize.saturating_sub(extranonce.len() / 2);
+        tracing::info!(
+            "[HANDSHAKE] sending Kaspa Common extranonce/difficulty before authorize to {}:{}",
+            ctx.remote_addr,
+            ctx.remote_port
+        );
+        ctx.send_v1_notification(
+            "set_extranonce",
+            vec![Value::String(extranonce.clone()), Value::Number(extranonce2_size.into())],
+        )
+        .await
+        .map_err(|e| format!("failed to set Kaspa Common extranonce: {e}"))?;
+        handler.send_subscribe_difficulty_v1(&ctx).await?;
+    }
+
+    // IceRiver's official Kaspa protocol requires these server messages before
+    // the miner sends mining.authorize. Sending them only from the authorize
+    // handler creates a deadlock with rental/proxy connections: each side waits
+    // for the other until CLIENT_TIMEOUT disconnects the miner.
+    if !kaspa_common_protocol && remote_app_lower.contains("iceriver") {
+        if let Some(handler) = client_handler {
+            tracing::info!(
+                "[HANDSHAKE] sending pre-authorize difficulty/extranonce to IceRiver {}:{}",
+                ctx.remote_addr,
+                ctx.remote_port
+            );
+            handler.send_subscribe_difficulty(&ctx).await?;
+            if !extranonce.is_empty() {
+                send_extranonce(ctx.clone()).await?;
+            }
+        }
+    }
 
     tracing::debug!("[SUBSCRIBE] ===== SUBSCRIBE COMPLETE FOR {} =====", ctx.remote_addr);
     Ok(())
@@ -236,7 +272,10 @@ pub async fn handle_authorize(
             crate::prom::record_bad_address(instance_id, &ctx.remote_addr);
             tracing::warn!(
                 "[AUTHORIZE] invalid address '{}' from {}:{} ({e}); accepting miner, coinbase -> pool ({})",
-                address, ctx.remote_addr, ctx.remote_port, fallback
+                address,
+                ctx.remote_addr,
+                ctx.remote_port,
+                fallback
             );
             fallback
         }
@@ -303,10 +342,10 @@ pub async fn handle_authorize(
     // ([null, extranonce, extranonce2_size]); an additional set_extranonce
     // notification is outside its protocol and could confuse the firmware.
     let remote_app_lower = ctx.remote_app.lock().to_lowercase();
-    let is_bitmain = remote_app_lower.contains("godminer")
-        || remote_app_lower.contains("bitmain")
-        || remote_app_lower.contains("antminer");
-    if !extranonce.is_empty() && !is_bitmain {
+    let kaspa_common_protocol = client_handler.as_ref().is_some_and(|handler| handler.kaspa_common_protocol());
+    let is_bitmain =
+        remote_app_lower.contains("godminer") || remote_app_lower.contains("bitmain") || remote_app_lower.contains("antminer");
+    if !extranonce.is_empty() && !is_bitmain && !kaspa_common_protocol {
         tracing::debug!("[AUTHORIZE] Step 2: Sending extranonce to client {} before difficulty/job", ctx.remote_addr);
         tracing::debug!("[AUTHORIZE] Extranonce value: '{}'", extranonce);
         send_extranonce(ctx.clone()).await?;
@@ -379,9 +418,8 @@ fn process_canxium_address(address: &str) -> String {
 /// unparseable address (see the authorize handler). Configurable via the
 /// POOL_FALLBACK_ADDRESS env var; defaults to the ZKas pool wallet.
 fn pool_fallback_address() -> String {
-    std::env::var("POOL_FALLBACK_ADDRESS").unwrap_or_else(|_| {
-        "firecash:pyfjy228l6gukj2vwztyq6q88eeyggjhvcuzf2jx8u4lvla42d6x0y3dsgp0wzggcc9cytqreh8r7mn".to_string()
-    })
+    std::env::var("POOL_FALLBACK_ADDRESS")
+        .unwrap_or_else(|_| "firecash:pyfjy228l6gukj2vwztyq6q88eeyggjhvcuzf2jx8u4lvla42d6x0y3dsgp0wzggcc9cytqreh8r7mn".to_string())
 }
 
 fn clean_wallet(input: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {

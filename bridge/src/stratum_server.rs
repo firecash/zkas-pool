@@ -42,6 +42,8 @@ pub struct BridgeConfig {
     /// (ADR-0022). Default `false` (raw TCP peer). Enable only when the
     /// listener sits behind the trusted forwarder.
     pub proxy_protocol: bool,
+    /// Emit the proxy-compatible Kaspa Common Stratum v1 handshake.
+    pub kaspa_common_protocol: bool,
 }
 
 /// Start block template listener with concrete KaspaApi
@@ -159,8 +161,14 @@ async fn listen_and_serve_impl<T: KaspaApiTrait + Send + Sync + 'static>(
     // Create client handler
     // Note: extranonce_size parameter is now only used for backward compatibility
     // Actual extranonce assignment happens per-client in handle_subscribe based on detected miner type
-    let client_handler =
-        Arc::new(ClientHandler::new(Arc::clone(&share_handler), min_diff, port_seeds, extranonce_size, instance_id.clone()));
+    let client_handler = Arc::new(ClientHandler::new_with_protocol(
+        Arc::clone(&share_handler),
+        min_diff,
+        port_seeds,
+        extranonce_size,
+        instance_id.clone(),
+        config.kaspa_common_protocol,
+    ));
 
     let shutdown_rx_for_bg = shutdown_rx.clone();
 

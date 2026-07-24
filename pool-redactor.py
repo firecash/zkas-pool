@@ -246,6 +246,11 @@ def sample():
         _payouts_record(bjson.get("blocks") or [])
         _payouts_save()
         for bw in (bjson.get("workers") or []):
+            # The bridge retains recently disconnected sessions as `idle`.
+            # They are historical records, not live workers, and must not keep
+            # zero-hash MRR probes visible or inflate the active-worker count.
+            if bw.get("status") != "online":
+                continue
             w = bw.get("wallet")
             wk = bw.get("worker") or "—"
             if not w:
@@ -322,10 +327,12 @@ def sample():
     if net_diff <= 0:                           # node unreachable → fall back to bridge gauge
         net_diff = _gmax(RX_NETDIFF)
 
-    # Pool hashrate = network × the pool's share of blocks found over a rolling
-    # window. This is the pool's TRUE fraction of the network, so it is always ≤
-    # network and the remainder is the other miners. (The bridge's per-worker rates
-    # are optimistic and summed to MORE than the whole network — hence pool>network.)
+    # Pool hashrate headline comes from accepted share difficulty, not short-term
+    # block luck. A block-ratio estimate over 10–15 minutes swings violently on
+    # this fast chain (including dropping to zero while shares and jobs continue),
+    # which made a healthy pool look stalled. Keep the block-share window below
+    # as a diagnostic, but use the live share-derived worker sum for the UI and
+    # cap it at the node's authoritative network estimate.
     raw_sum_hs = sum((w.get("hashrate") or 0) for w in workers) * 1e9  # GH/s -> H/s
     # Use the bridge's central monotonic block total; only fall back to the
     # (churn-sensitive) per-worker sum if the bridge total is unavailable.
@@ -336,15 +343,14 @@ def sample():
     bs.append((now, pool_blocks, net_blocks))
     while len(bs) > 1 and now - bs[0][0] > BLOCKSHARE_WINDOW:
         bs.popleft()
-    pool_hs = None
+    block_share_hs = None
     dpool = dnet = -1
     if net_hs > 0 and len(bs) >= 2:
         dpool = pool_blocks - bs[0][1]
         dnet = net_blocks - bs[0][2]
         if dnet >= BLOCKSHARE_MIN_NET and dpool >= 0:
-            pool_hs = net_hs * min(1.0, dpool / dnet)
-    if pool_hs is None:                         # not enough block history yet
-        pool_hs = min(raw_sum_hs, net_hs) if net_hs > 0 else raw_sum_hs
+            block_share_hs = net_hs * min(1.0, dpool / dnet)
+    pool_hs = min(raw_sum_hs, net_hs) if net_hs > 0 else raw_sum_hs
     if net_hs <= 0:                             # node fully unreachable: degrade gracefully
         net_hs = max(raw_sum_hs, pool_hs)
 
@@ -361,6 +367,7 @@ def sample():
             "poolHashrate": pool_hs,
             "networkBlockCount": net_blocks,
             "networkDifficulty": net_diff,
+            "blockShareHashrate": block_share_hs,
             # A worker is "active" if the bridge currently tracks its connection.
             # Prom counter series persist for every session since bridge start, so
             # counting raw series keys inflates this with long-disconnected rigs.

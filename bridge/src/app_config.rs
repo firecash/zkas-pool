@@ -23,6 +23,10 @@ pub struct InstanceConfig {
     pub shares_per_min: Option<u32>,
     pub var_diff_stats: Option<bool>,
     pub pow2_clamp: Option<bool>,
+    /// Use the Kaspa Common Stratum handshake used by K1Pool, 2Miners and
+    /// Kryptex. Intended for strict Stratum proxies such as MRR.
+    #[serde(default)]
+    pub kaspa_common_protocol: bool,
 }
 
 /// Global configuration (shared across all instances)
@@ -230,6 +234,7 @@ impl Default for InstanceConfig {
             shares_per_min: None,
             var_diff_stats: None,
             pow2_clamp: None,
+            kaspa_common_protocol: false,
         }
     }
 }

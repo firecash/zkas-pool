@@ -438,6 +438,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 coinbase_tag_suffix: global.coinbase_tag_suffix.clone(),
                 // Standalone binary is not fronted by the fly edge.
                 proxy_protocol: false,
+                kaspa_common_protocol: instance.kaspa_common_protocol,
             };
 
             listen_and_serve_with_shutdown(

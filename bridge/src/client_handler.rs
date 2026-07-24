@@ -42,6 +42,7 @@ pub struct ClientHandler {
     last_balance_check: Arc<Mutex<Instant>>,
     share_handler: Arc<ShareHandler>,
     instance_id: String, // Instance identifier for logging
+    kaspa_common_protocol: bool,
 }
 
 impl ClientHandler {
@@ -51,6 +52,17 @@ impl ClientHandler {
         port_seeds: HashMap<u16, f64>,
         extranonce_size: i8,
         instance_id: String,
+    ) -> Self {
+        Self::new_with_protocol(share_handler, min_share_diff, port_seeds, extranonce_size, instance_id, false)
+    }
+
+    pub fn new_with_protocol(
+        share_handler: Arc<ShareHandler>,
+        min_share_diff: f64,
+        port_seeds: HashMap<u16, f64>,
+        extranonce_size: i8,
+        instance_id: String,
+        kaspa_common_protocol: bool,
     ) -> Self {
         let max_extranonce = if extranonce_size > 0 { (2_f64.powi(8 * extranonce_size.min(3) as i32) - 1.0) as i32 } else { 0 };
 
@@ -65,6 +77,7 @@ impl ClientHandler {
             last_balance_check: Arc::new(Mutex::new(Instant::now())),
             share_handler,
             instance_id,
+            kaspa_common_protocol,
         }
     }
 
@@ -82,6 +95,43 @@ impl ClientHandler {
     /// `default_client.rs` that record per-IP metrics.
     pub fn instance_id(&self) -> &str {
         &self.instance_id
+    }
+
+    pub fn kaspa_common_protocol(&self) -> bool {
+        self.kaspa_common_protocol
+    }
+
+    /// Send the initial difficulty synchronously during the subscribe
+    /// handshake. IceRiver's published Kaspa stratum sequence is:
+    /// subscribe response -> set_difficulty -> set_extranonce -> authorize.
+    /// Waiting for authorize before advertising these values deadlocks some
+    /// rental/proxy paths, because the miner waits for the server sequence.
+    pub async fn send_subscribe_difficulty(&self, client: &StratumContext) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let diff = self.seed_for_port(client.local_port);
+        let diff_value =
+            serde_json::Value::Number(serde_json::Number::from_f64(diff).unwrap_or_else(|| serde_json::Number::from(diff as u64)));
+        let event = JsonRpcEvent {
+            jsonrpc: "2.0".to_string(),
+            method: "mining.set_difficulty".to_string(),
+            id: None,
+            params: vec![diff_value],
+        };
+
+        client.send(event).await.map_err(|e| format!("failed to set subscribe difficulty: {e}").into())
+    }
+
+    /// Kaspa Common/Stratum-v1 form used by MRR-compatible public pools.
+    pub async fn send_subscribe_difficulty_v1(
+        &self,
+        client: &StratumContext,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let diff = self.seed_for_port(client.local_port);
+        let value =
+            serde_json::Value::Number(serde_json::Number::from_f64(diff).unwrap_or_else(|| serde_json::Number::from(diff as u64)));
+        client
+            .send_v1_notification("mining.set_difficulty", vec![value])
+            .await
+            .map_err(|e| format!("failed to set Kaspa Common difficulty: {e}").into())
     }
 
     pub fn on_connect(&self, ctx: Arc<StratumContext>) {

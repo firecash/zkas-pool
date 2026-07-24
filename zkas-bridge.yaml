@@ -1,6 +1,7 @@
 # ZKas mining pool — public stratum bridge.
-# One shared ZKas node; several stratum ports at different fixed
-# difficulties plus an auto (vardiff) port, so any miner picks the right one.
+# One shared ZKas node. Port 5555 is the public auto/vardiff endpoint;
+# legacy ports 5566 and 5588 are compatibility aliases with identical settings.
+# Port 5577 uses the Kaspa Common dialect required by MRR/strict proxies.
 kaspad_address: "127.0.0.1:16110"
 block_wait_time: 500
 print_stats: true
@@ -30,23 +31,27 @@ instances:
     shares_per_min: 20
     log_to_file: false
 
-  # Low — small GPUs.
+  # Legacy low-port alias — identical auto/vardiff behavior to 5555.
   - stratum_port: ":5566"
-    min_share_diff: 512
+    min_share_diff: 8192
     prom_port: ":2115"
     var_diff: true
+    shares_per_min: 20
     log_to_file: false
 
-  # Medium — large GPUs / small ASICs.
+  # MRR / proxy — Kaspa Common wire dialect for strict Stratum proxies.
   - stratum_port: ":5577"
     min_share_diff: 8192
     prom_port: ":2116"
+    kaspa_common_protocol: true
     log_to_file: false
 
-  # High — ASICs (KS-series). Fixed, appropriately hard.
+  # Legacy high-port alias — identical auto/vardiff behavior to 5555.
   - stratum_port: ":5588"
-    min_share_diff: 65536
+    min_share_diff: 8192
     prom_port: ":2117"
+    var_diff: true
+    shares_per_min: 20
     log_to_file: false
 
   # Test — low difficulty (CPU miners / smoke tests). Not for ASICs.
