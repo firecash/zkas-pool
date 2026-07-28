@@ -107,18 +107,18 @@
     <div id="minerResult" style="margin-top:14px;display:none">
       <div class="grid">
         <div class="stat"><div class="v" id="mHash">–</div><div class="l">Your hashrate</div></div>
-        <div class="stat"><div class="v" id="mShares">–</div><div class="l">Shares</div></div>
+        <div class="stat"><div class="v" id="mShares">–</div><div class="l">Blocks</div></div>
         <div class="stat"><div class="v" id="mFound">–</div><div class="l">Blocks found</div></div>
         <div class="stat"><div class="v" id="mPaid">–</div><div class="l">Paid (confirmed)</div></div>
         <div class="stat"><div class="v" id="mPending">–</div><div class="l">Waiting to be paid</div></div>
       </div>
-      <table style="margin-top:12px"><thead><tr><th>Worker</th><th>Hashrate</th><th>Shares</th></tr></thead>
+      <table style="margin-top:12px"><thead><tr><th>Worker</th><th>Hashrate</th><th>Status</th><th>Blocks</th></tr></thead>
         <tbody id="mWorkers"></tbody></table>
       <h2 style="margin-top:16px">Payout history</h2>
       <table style="margin-top:8px"><thead><tr><th>When</th><th>Worker</th><th>Amount</th><th>Block</th></tr></thead>
         <tbody id="mPayouts"></tbody></table>
       <div class="hint" style="margin-top:12px">
-        Each block pays <b>60 $zkas</b> straight to your shielded address. <b>Confirmed</b> = final; <b>waiting</b> = still maturing (~10 min). The pool can't see your shielded balance — check it in your <a href="https://wallet.zkas.info">wallet</a>.
+        Each block pays the miner <b>57 $zkas</b> after the 5% development allocation, straight to your shielded address. <b>Confirmed</b> = final; <b>waiting</b> = still maturing (~10 min). The pool can't see your shielded balance — check it in your <a href="https://wallet.zkas.info">wallet</a>.
       </div>
     </div>
     <div id="minerEmpty" class="hint" style="margin-top:12px;display:none">No miner found for that address yet — check it's correct and that your rig is connected.</div>
@@ -131,21 +131,21 @@
       <div class="stat"><div class="v" id="stHash">–</div><div class="l">Pool hashrate</div></div>
       <div class="stat"><div class="v" id="stWorkers">–</div><div class="l">Active workers</div></div>
       <div class="stat"><div class="v" id="stBlocks">–</div><div class="l">Blocks found</div></div>
-      <div class="stat"><div class="v" id="stShares">–</div><div class="l">Shares</div></div>
+      <div class="stat"><div class="v" id="stShare">–</div><div class="l">Network share</div></div>
       <div class="stat"><div class="v" id="stHeight">–</div><div class="l">Block height</div></div>
       <div class="stat"><div class="v" id="stNet">–</div><div class="l">Network hashrate</div></div>
       <div class="stat"><div class="v">0%</div><div class="l">Pool fee</div></div>
-      <div class="stat"><div class="v">60 $zkas</div><div class="l">Block reward</div></div>
+      <div class="stat"><div class="v">57 $zkas</div><div class="l">Miner reward</div></div>
     </div>
   </div>
 
   <!-- WORKERS -->
   <div class="card">
     <h2>Workers</h2>
-    <table><thead><tr><th>Worker</th><th>Address</th><th>Hashrate</th><th>Shares</th></tr></thead>
-      <tbody id="workersBody"><tr><td colspan="4" class="empty">No workers connected yet.</td></tr></tbody>
+    <table><thead><tr><th>Worker</th><th>Address</th><th>Hashrate</th><th>Status</th><th>Blocks</th></tr></thead>
+      <tbody id="workersBody"><tr><td colspan="5" class="empty">No workers connected yet.</td></tr></tbody>
     </table>
-    <p class="empty" style="margin:12px 2px 0">Hashrate and shares are public, but every address is <b>masked</b> — you can see the pool's distribution without learning who owns what. Look up your own full stats by address above.</p>
+    <p class="empty" style="margin:12px 2px 0">Hashrate and blocks are public, but every address is <b>masked</b> — you can see the pool's distribution without learning who owns what. Look up your own full stats by address above.</p>
   </div>
 
   <!-- BLOCKS -->
@@ -178,19 +178,29 @@
   function ago(ts){ if(!ts)return '—'; const s=Math.max(0,(Date.now()-(ts>1e12?ts:ts*1000))/1000);
     if(s<60)return Math.floor(s)+'s ago'; if(s<3600)return Math.floor(s/60)+'m ago'; return Math.floor(s/3600)+'h ago'; }
 
+  let refreshTimer = null;
   async function refresh(){
+    const controller = new AbortController();
+    const timeout = setTimeout(()=>controller.abort(),4000);
     try{
-      const s = await (await fetch('/api/stats',{cache:'no-store'})).json();
+      const response = await fetch('/api/stats?t='+Date.now(),{
+        cache:'no-store',
+        signal:controller.signal,
+        headers:{'Cache-Control':'no-cache'}
+      });
+      if(!response.ok) throw new Error('stats '+response.status);
+      const s = await response.json();
       $('dot').classList.add('on'); $('statusText').textContent='pool online';
       // Aggregate pool hashrate is provided pre-summed (H/s) by the redactor.
       $('stHash').textContent   = fmtHash(s.poolHashrate ?? 0);
       $('stWorkers').textContent= s.activeWorkers ?? 0;
       $('stBlocks').textContent = (s.blocksAccepted ?? s.totalBlocks ?? 0).toLocaleString();
-      $('stShares').textContent = (s.totalShares??0).toLocaleString();
+      const networkShare = s.networkHashrate > 0 ? (100 * (s.poolHashrate ?? 0) / s.networkHashrate) : 0;
+      $('stShare').textContent  = Math.min(100,networkShare).toFixed(1)+'%';
       $('stHeight').textContent = (s.networkBlockCount??0).toLocaleString();
       $('stNet').textContent    = fmtHash(s.networkHashrate);  // already H/s
 
-      // Workers: hashrate + shares public, address already masked by the redactor.
+      // Workers: hashrate + blocks public, address already masked by the redactor.
       const wb=$('workersBody');
       const ws=(s.workers||[]).slice().sort((a,b)=>(b.hashrate||0)-(a.hashrate||0));
       if(ws.length){
@@ -198,8 +208,9 @@
           <td>${w.worker||'—'}</td>
           <td class="mono">${w.wallet||'—'}</td>
           <td>${fmtHash((w.hashrate||0)*1e9)}</td>
-          <td>${(w.shares||0).toLocaleString()}</td></tr>`).join('');
-      } else { wb.innerHTML='<tr><td colspan="4" class="empty">No workers connected yet.</td></tr>'; }
+          <td>${w.warmingUp ? ((w.source||'primary')==='primary' ? 'Connected · waiting for shares' : 'Redirected · waiting for shares') : ((w.source||'primary')!=='primary' ? 'Redirected · mining' : ((w.status||'online')==='online' ? 'Mining' : (w.status||'Offline')))}</td>
+          <td>${(w.blocks||0).toLocaleString()}</td></tr>`).join('');
+      } else { wb.innerHTML='<tr><td colspan="5" class="empty">No workers connected yet.</td></tr>'; }
 
       const bb=$('blocksBody');
       if((s.blocks||[]).length){
@@ -211,9 +222,15 @@
       } else { bb.innerHTML='<tr><td colspan="4" class="empty">No blocks found yet.</td></tr>'; }
     }catch{
       $('dot').classList.remove('on'); $('statusText').textContent='pool status unavailable';
+    }finally{
+      clearTimeout(timeout);
+      clearTimeout(refreshTimer);
+      refreshTimer=setTimeout(refresh,2000);
     }
   }
-  refresh(); setInterval(refresh,10000);
+  refresh();
+  document.addEventListener('visibilitychange',()=>{ if(!document.hidden) refresh(); });
+  window.addEventListener('focus',refresh);
 
   // Per-address miner lookup
   let lastLookup = null;
@@ -227,19 +244,20 @@
       if(!m.found){ res.style.display='none'; emp.style.display='block'; return; }
       emp.style.display='none'; res.style.display='block';
       $('mHash').textContent   = fmtHash((m.totalHashrate||0)*1e9);
-      $('mShares').textContent = (m.totalShares||0).toLocaleString();
+      $('mShares').textContent = (m.blocksFound||0).toLocaleString();
       $('mFound').textContent  = (m.blocksFound||0).toLocaleString();
       $('mPaid').textContent   = (m.paidFc||0).toLocaleString()+' $zkas';
       $('mPending').textContent= (m.pendingFc||0).toLocaleString()+' $zkas';
       $('mWorkers').innerHTML  = (m.workers||[]).map(w=>`<tr>
         <td>${w.worker||'—'}</td><td>${fmtHash((w.hashrate||0)*1e9)}</td>
-        <td>${(w.shares||0).toLocaleString()}</td></tr>`).join('') || '<tr><td colspan="3" class="empty">No active workers.</td></tr>';
+        <td>${w.warmingUp ? ((w.source||'primary')==='primary' ? 'Connected · waiting for shares' : 'Redirected · waiting for shares') : ((w.source||'primary')!=='primary' ? 'Redirected · mining' : ((w.status||'online')==='online' ? 'Mining' : (w.status||'Offline')))}</td>
+        <td>${(w.blocks||0).toLocaleString()}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">No active workers.</td></tr>';
       $('mPayouts').innerHTML  = (m.payouts||[]).map(p=>`<tr>
         <td>${new Date((p.ts||0)*1000).toLocaleString()}</td>
         <td>${p.worker||'—'}</td>
         <td>${(p.amountFc||60).toLocaleString()} $zkas</td>
         <td class="mono" style="font-size:.85em">${(p.hash||'').slice(0,10)}…${(p.hash||'').slice(-6)}</td></tr>`).join('')
-        || '<tr><td colspan="4" class="empty">No payouts recorded yet — history starts collecting from now (each confirmed block = 60 $zkas paid directly to your address).</td></tr>';
+        || '<tr><td colspan="4" class="empty">No payouts recorded yet — history starts collecting from now (each confirmed block = 57 $zkas paid directly to your address after the 5% development allocation).</td></tr>';
     }catch{ $('minerEmpty').style.display='block'; $('minerResult').style.display='none'; }
   }
   $('lookupBtn').addEventListener('click',lookup);

@@ -24,12 +24,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 INSTANCE_PORTS = [2114, 2115, 2116, 2117, 2118]
 LISTEN = ("127.0.0.1", 3034)
-REWARD_FC = 60          # coinbase reward per block at the live 1 BPS rate (60 ZKAS/block;
-                        # see consensus/src/processes/coinbase.rs — 60 FC/s ÷ 1 BPS = 60/block)
+REWARD_FC = 57          # miner payout from the 60 ZKAS gross coinbase reward:
+                        # 95% to the miner, 5% (3 ZKAS at launch) to development
 TWO32 = 2 ** 32
 SAMPLE_SECS = 5         # scrape cadence (server-side refresh; client polls ~5s too)
 WINDOW_SECS = 600       # hashrate = Δ(share-diff) · 2^32 / Δt over a 10-min rolling window
 START = time.time()
+# Workers can be moved to the isolated VPS3 listener by miner/MRR failover.
+# Import only its public bridge stats; this does not make VPS3 part of the
+# payout/accounting authority and a timeout simply leaves the prior snapshot.
+REMOTE_POOL_STATS_URLS = [u.strip() for u in os.environ.get(
+    "ZKAS_REMOTE_POOL_STATS_URLS",
+    "http://204.10.194.28:3036/api/stats,http://204.10.194.28:3035/api/stats",
+).split(",") if u.strip()]
 
 
 def _rx(metric):
@@ -53,8 +60,11 @@ RX_NETDIFF = re.compile(r'^ks_network_difficulty_gauge\s+([0-9.eE+-]+)', re.M)
 NODE_RPC = "127.0.0.1:16110"
 PROTO_DIR = "/root/work/rusty-kaspa/rpc/grpc/core/proto"
 HR_WINDOW = 1000       # blocks; node's blueWork/time averaging window for the estimate
-_NODE = {"hr": 0.0, "diff": 0.0, "ts": 0.0}
+_NODE = {"hr": 0.0, "diff": 0.0, "blocks": 0, "ts": 0.0}
 NODE_TTL = 20.0        # seconds; refresh at roughly the scrape cadence
+_HEIGHT = {"value": 0, "ts": 0.0}
+_HEIGHT_LOCK = threading.Lock()
+HEIGHT_TTL = 1.0       # UI polls every 2s; avoid the 20s hashrate snapshot delay
 
 def _node_rpc(payload):
     return subprocess.run(
@@ -63,25 +73,53 @@ def _node_rpc(payload):
         capture_output=True, text=True, timeout=8).stdout
 
 def node_stats():
-    """(network_hashrate_H/s, network_difficulty) measured by the node, cached for
+    """(network_hashrate_H/s, network_difficulty, block_count) measured by the node, cached for
     NODE_TTL. Both come straight from the node so the dashboard matches reality
     regardless of the bridge's gauges. Returns last-good (or zeros) on failure."""
     now = time.time()
     if now - _NODE["ts"] < NODE_TTL and _NODE["hr"] > 0:
-        return _NODE["hr"], _NODE["diff"]
+        return _NODE["hr"], _NODE["diff"], _NODE["blocks"]
     try:
         out = _node_rpc('{"estimateNetworkHashesPerSecondRequest":{"windowSize":%d}}' % HR_WINDOW)
         m = re.search(r'"networkHashesPerSecond":\s*"?([0-9.eE+]+)"?', out)
         dag = _node_rpc('{"getBlockDagInfoRequest":{}}')
         md = re.search(r'"difficulty":\s*([0-9.eE+]+)', dag)
+        mb = re.search(r'"blockCount":\s*"?([0-9]+)"?', dag)
         if m:
             _NODE["hr"] = float(m.group(1))
             if md:
                 _NODE["diff"] = float(md.group(1))
+            if mb:
+                _NODE["blocks"] = int(mb.group(1))
             _NODE["ts"] = now
     except Exception:
         pass  # keep last good values
-    return _NODE["hr"], _NODE["diff"]
+    return _NODE["hr"], _NODE["diff"], _NODE["blocks"]
+
+
+def live_block_height(fallback=0):
+    """Return the current virtual DAA score from the local node API.
+
+    Height is cheap and time-sensitive, unlike the network-hashrate estimate.
+    Cache it for one second so many dashboard viewers do not fan out into
+    duplicate node requests.
+    """
+    now = time.time()
+    with _HEIGHT_LOCK:
+        if now - _HEIGHT["ts"] < HEIGHT_TTL and _HEIGHT["value"] > 0:
+            return _HEIGHT["value"]
+        try:
+            raw = urllib.request.urlopen(
+                "http://127.0.0.1:8500/info/blockdag", timeout=1
+            ).read().decode()
+            dag = json.loads(raw)
+            height = int(dag.get("virtualDaaScore") or dag.get("blockCount") or 0)
+            if height > 0:
+                _HEIGHT.update(value=height, ts=now)
+                return height
+        except Exception:
+            pass
+        return _HEIGHT["value"] or fallback
 
 
 def _labels(s):
@@ -133,7 +171,7 @@ _blockshare = collections.deque()
 BLOCKSHARE_WINDOW = 900   # 10-15 min of blocks for a stable share estimate
 BLOCKSHARE_MIN_NET = 30   # need at least this many network blocks before trusting it
 
-# ---- per-wallet payout history (solo model: 1 confirmed block = 60 ZKAS paid
+# ---- per-wallet payout history (solo model: 1 confirmed block = 57 ZKAS paid
 # by the chain to that wallet). Fed from the bridge's recent-blocks list and
 # persisted to disk so it survives redactor AND bridge restarts. ------------
 PAYOUT_HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -202,6 +240,44 @@ def payout_history(wallet, limit=50):
              "amountFc": REWARD_FC} for e in reversed(lst[-limit:])]
 
 
+def remote_pool_workers():
+    """Return live workers on the failover pool, or [] if it is unavailable.
+
+    The remote endpoint is treated as an untrusted telemetry source: only
+    workers explicitly marked online are imported, and no remote totals are
+    used for payouts or block accounting.
+    """
+    result = []
+    for stats_url in REMOTE_POOL_STATS_URLS:
+      try:
+        req = urllib.request.Request(stats_url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
+            payload = json.loads(resp.read().decode())
+        for rw in payload.get("workers") or []:
+            if (rw.get("status") or "online") != "online":
+                continue
+            wallet = (rw.get("wallet") or "").strip()
+            if not wallet:
+                continue
+            result.append({
+                "worker": rw.get("worker") or "—",
+                "wallet": wallet,
+                "hashrate": max(0.0, float(rw.get("hashrate") or 0.0)),
+                "shares": int(rw.get("shares") or 0),
+                "blocks": int(rw.get("blocks") or 0),
+                "difficulty": rw.get("currentDifficulty"),
+                "warmingUp": float(rw.get("hashrate") or 0.0) <= 0,
+                "online": True,
+                "status": "redirected-vps3",
+                "source": "VPS3 new 5555" if ":3036/" in stats_url else "VPS3 old 5577",
+                "lastSeen": rw.get("lastSeen"),
+                "sessionUptime": rw.get("sessionUptime"),
+            })
+      except Exception:
+        continue
+    return result
+
+
 def sample():
     text = ""
     for p in INSTANCE_PORTS:
@@ -259,6 +335,11 @@ def sample():
                 "hr": float(bw.get("hashrate") or 0.0),          # GH/s
                 "shares": int(bw.get("shares") or 0),
                 "diff": bw.get("currentDifficulty"),
+                # Keep lifecycle metadata separate from the rate.  A connected
+                # miner can legitimately have 0 H/s before its first share.
+                "status": bw.get("status") or "online",
+                "lastSeen": bw.get("lastSeen"),
+                "sessionUptime": bw.get("sessionUptime"),
             }
     except Exception:
         pass
@@ -288,7 +369,11 @@ def sample():
             "wallet": wallet,
             "hashrate": hr_final if b else 0.0,  # a dead session has no live rate
             "shares": int(shares.get(k, 0)) or (b["shares"] if b else 0),
+            "blocks": int(found.get(k, 0)),
             "difficulty": b["diff"] if b else None,
+            "status": b["status"] if b else "offline",
+            "lastSeen": b.get("lastSeen") if b else None,
+            "sessionUptime": b.get("sessionUptime") if b else None,
             # Prometheus counters persist for every session since bridge start;
             # only workers the bridge currently tracks are actually connected.
             "online": b is not None,
@@ -306,10 +391,19 @@ def sample():
             "wallet": wallet,
             "hashrate": b["hr"],                       # bridge rate (may be 0 = warming up)
             "shares": b["shares"],
+            "blocks": int(found.get((wallet, worker), 0)),
             "difficulty": b["diff"],
             "warmingUp": b["hr"] <= 0,
             "online": True,
+            "status": b["status"],
+            "lastSeen": b.get("lastSeen"),
+            "sessionUptime": b.get("sessionUptime"),
         })
+
+    # A miner that fails over to VPS3 is no longer visible to the primary
+    # bridge. Merge its live telemetry so the public dashboard follows the
+    # individual worker instead of displaying a stale 0 H/s row.
+    workers.extend(remote_pool_workers())
 
     # drop workers gone since last scrape
     live = set(diff.keys())
@@ -322,8 +416,12 @@ def sample():
     # ---- Network + pool hashrate, both grounded in the node ----------------
     # Network = the node's measured EstimateNetworkHashesPerSecond (authoritative;
     # includes every miner, not just ours). Difficulty likewise from the node.
-    net_hs, net_diff = node_stats()
-    net_blocks = int(_gmax(RX_NETBLK))          # cumulative network blocks (from node)
+    net_hs, net_diff, node_blocks = node_stats()
+    net_blocks = node_blocks or int(_gmax(RX_NETBLK))
+    # Refresh the display height in the single background sampler. Never make
+    # this explorer request from an HTTP handler: if :8500 slows down, callers
+    # otherwise serialize behind _HEIGHT_LOCK and exhaust the dashboard timeout.
+    display_height = live_block_height(net_blocks)
     if net_diff <= 0:                           # node unreachable → fall back to bridge gauge
         net_diff = _gmax(RX_NETDIFF)
 
@@ -365,7 +463,7 @@ def sample():
         _state.update({
             "networkHashrate": net_hs,
             "poolHashrate": pool_hs,
-            "networkBlockCount": net_blocks,
+            "networkBlockCount": display_height,
             "networkDifficulty": net_diff,
             "blockShareHashrate": block_share_hs,
             # A worker is "active" if the bridge currently tracks its connection.
@@ -441,8 +539,13 @@ def redact(stats, bbw):
             "wallet": mask_addr(w.get("wallet")),
             "hashrate": w.get("hashrate"),
             "shares": w.get("shares"),
+            "blocks": w.get("blocks") or 0,
             "difficulty": w.get("difficulty"),
             "warmingUp": bool(w.get("warmingUp")),
+            "status": w.get("status") or ("online" if w.get("online") else "offline"),
+            "lastSeen": w.get("lastSeen"),
+            "sessionUptime": w.get("sessionUptime"),
+            "source": w.get("source") or "primary",
         } for w in sorted(workers, key=lambda x: -(x.get("hashrate") or 0))
           if w.get("online")],
         "blocks": [],
@@ -462,9 +565,14 @@ def miner(address, stats, bbw):
             "worker": w.get("worker") or "—",
             "hashrate": w.get("hashrate"),   # GH/s (0 for offline sessions)
             "shares": w.get("shares") or 0,
+            "blocks": w.get("blocks") or 0,
             "difficulty": w.get("difficulty"),
             "warmingUp": bool(w.get("warmingUp")),
             "online": bool(w.get("online")),
+            "status": w.get("status") or ("online" if w.get("online") else "offline"),
+            "lastSeen": w.get("lastSeen"),
+            "sessionUptime": w.get("sessionUptime"),
+            "source": w.get("source") or "primary",
         } for w in workers],
         "totalHashrate": sum((w.get("hashrate") or 0) for w in workers if w.get("online")),  # GH/s
         "totalShares": sum((w.get("shares") or 0) for w in workers),
@@ -474,7 +582,7 @@ def miner(address, stats, bbw):
         "paidFc": confirmed * REWARD_FC,
         "pendingFc": pending * REWARD_FC,
         # Per-block payout history (solo model: each confirmed block paid
-        # 60 ZKAS straight to this wallet by the chain). Newest first.
+        # 57 ZKAS straight to this wallet by the chain). Newest first.
         "payouts": payout_history(address),
     }
 
@@ -485,19 +593,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, code, body):
         data = body.encode() if isinstance(body, str) else body
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            # The browser/proxy abandoned an expired request. Do not attempt a
+            # second response or emit a traceback for a dead socket.
+            return
 
     def do_GET(self):
         u = urlparse(self.path)
         path = u.path.rstrip("/")
         try:
             if path in ("/api/stats", "/pubstats"):
-                self._send(200, json.dumps(redact(snapshot(), blocks_by_wallet())))
+                public = redact(snapshot(), blocks_by_wallet())
+                self._send(200, json.dumps(public))
             elif path == "/api/miner":
                 addr = (parse_qs(u.query).get("address") or [""])[0]
                 if not addr:
@@ -506,12 +620,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps(miner(addr, snapshot(), blocks_by_wallet())))
             else:
                 self._send(404, json.dumps({"error": "not found"}))
+        except (BrokenPipeError, ConnectionResetError):
+            return
         except Exception as e:
             self._send(502, json.dumps({"error": str(e)}))
 
 
 if __name__ == "__main__":
     _payouts_load()  # payout history survives redactor + bridge restarts
-    sample()  # prime one sample so the first request isn't empty
+    # Bind immediately. A synchronous initial scrape can take several seconds
+    # when a node/explorer dependency is slow, producing a 502 window on every
+    # service restart. The sampler fills the initially empty snapshot shortly.
     threading.Thread(target=sampler_loop, daemon=True).start()
     ThreadingHTTPServer(LISTEN, Handler).serve_forever()
