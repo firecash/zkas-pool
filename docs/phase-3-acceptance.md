@@ -209,7 +209,7 @@ landed before the operator-driven re-run.
 **Environment.** Pool VPS (NetCup), `kaspad-tn10` at
 `grpc://127.0.0.1:16210`, Docker Postgres 17-alpine, unified
 `katpool` runtime, ASIC: Goldshell running `BzMiner/v14.0.2`
-firmware, worker `goldshell-rig`, IP `23.148.36.54`.
+firmware (worker identity and source IP redacted — third-party miner data).
 
 **Symptoms observed in the 2.5-minute live run** (artefacts in
 `pipeline-evidence/2026-05-27T06-30-03Z-m3d-asic-debug2/`, 129 MB
