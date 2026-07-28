@@ -13,15 +13,15 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 
-/// Drop a connection after this long with no inbound bytes.
-///
-/// TCP keepalive (set at accept) reaps truly dead sockets at the transport
-/// layer; this is the application-level backstop for sockets that look alive
-/// to the kernel but have gone silent. With vardiff a live miner submits
-/// shares far more often than this, so 10 minutes of total inbound silence
-/// reliably indicates an abandoned/half-open connection whose
-/// `connection_session` row would otherwise never close.
-const POST_AUTH_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+/// Unauthenticated sockets must complete the Stratum handshake promptly.
+/// Once authorized, share frequency is not a liveness signal: a low-hashrate
+/// miner can legitimately spend a long time finding its first share. Dead
+/// authenticated sockets are detected by TCP keepalive and failed reads/writes.
+const PRE_AUTH_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn should_drop_for_idle(is_authorized: bool, elapsed: std::time::Duration) -> bool {
+    !is_authorized && elapsed >= PRE_AUTH_IDLE_TIMEOUT
+}
 
 /// Maximum permitted size (in bytes) for an incomplete Stratum line awaiting `\n`.
 /// Legitimate JSON-RPC Stratum messages are well below this; the cap prevents unbounded
@@ -957,15 +957,14 @@ impl StratumListener {
                     break;
                 }
                 Err(_) => {
-                    // Read deadline elapsed with no inbound bytes. Drop the
-                    // connection once it has been idle past the backstop so a
-                    // silent half-open socket can't pin its session row open
-                    // forever; otherwise keep polling.
-                    if last_activity.elapsed() >= POST_AUTH_IDLE_TIMEOUT {
+                    // Share frequency is not a liveness signal after authorize.
+                    // TCP keepalive and socket errors handle dead peers.
+                    let is_authorized = !ctx.wallet_addr.lock().is_empty();
+                    if should_drop_for_idle(is_authorized, last_activity.elapsed()) {
                         let worker_name = ctx.worker_name.lock().clone();
                         let remote_app = ctx.remote_app.lock().clone();
                         info!(
-                            "[CONNECTION] Client {}:{} idle for {}s with no data; dropping (worker='{}' app='{}')",
+                            "[CONNECTION] Unauthenticated client {}:{} idle for {}s with no data; dropping (worker='{}' app='{}')",
                             ctx.remote_addr,
                             ctx.remote_port,
                             last_activity.elapsed().as_secs(),
@@ -1137,5 +1136,18 @@ mod proxy_protocol_tests {
     async fn rejects_non_proxy_stream() {
         let mut cursor = b"{\"id\":1,\"method\":\"mining.subscribe\"}\n".as_slice();
         assert!(read_proxy_v2_source(&mut cursor).await.is_err());
+    }
+}
+
+#[cfg(test)]
+mod idle_timeout_tests {
+    use super::{PRE_AUTH_IDLE_TIMEOUT, should_drop_for_idle};
+    use std::time::Duration;
+
+    #[test]
+    fn only_unauthorized_idle_connections_expire() {
+        assert!(!should_drop_for_idle(false, PRE_AUTH_IDLE_TIMEOUT - Duration::from_millis(1)));
+        assert!(should_drop_for_idle(false, PRE_AUTH_IDLE_TIMEOUT));
+        assert!(!should_drop_for_idle(true, Duration::from_secs(24 * 60 * 60)));
     }
 }

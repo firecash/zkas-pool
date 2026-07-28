@@ -109,8 +109,12 @@ pub async fn handle_subscribe(
 
     tracing::debug!("[SUBSCRIBE] Client info - app: '{}', extranonce: '{}', addr: {}", remote_app, extranonce, ctx.remote_addr);
 
-    // Check if this is a Bitmain miner - use same detection logic as assign_extranonce_for_miner
-    // (case-insensitive matching for consistency)
+    // Select the handshake profile once from the listener and miner identity.
+    //
+    // Live probes of 2Miners and K1Pool with `GodMiner/2.0.0` both use the
+    // legacy Bitmain subscription result `[null, prefix, remaining_nonce_size]`
+    // and legacy array+timestamp jobs. A Common subscribe response followed by
+    // a legacy job is a hybrid that some firmware silently ignores.
     let remote_app_lower = remote_app.to_lowercase();
     let kaspa_common_protocol = client_handler.as_ref().is_some_and(|handler| handler.kaspa_common_protocol());
     let is_bitmain =
@@ -118,17 +122,14 @@ pub async fn handle_subscribe(
     tracing::debug!("[SUBSCRIBE] Detected miner type - Remote app: '{}', Is Bitmain: {}", remote_app, is_bitmain);
 
     if is_bitmain {
-        tracing::debug!("[SUBSCRIBE] ===== BITMAIN MINER DETECTED =====");
-        tracing::debug!("[SUBSCRIBE] Bitmain requires extranonce in subscribe response");
-        tracing::debug!("[SUBSCRIBE] Current extranonce: '{}' (length: {} bytes)", extranonce, extranonce.len() / 2);
+        tracing::info!(
+            "[SUBSCRIBE] Bitmain/GodMiner detected ({}) — using embedded-extranonce legacy handshake",
+            ctx.remote_addr
+        );
     }
 
-    let response = if is_bitmain && !kaspa_common_protocol {
-        // Bitmain format - extranonce in subscribe response
+    let response = if is_bitmain {
         let extranonce2_size = 8 - (extranonce.len() / 2);
-        tracing::debug!("[SUBSCRIBE] ===== USING BITMAIN SUBSCRIBE FORMAT FOR {} =====", ctx.remote_addr);
-        tracing::debug!("[SUBSCRIBE] Bitmain extranonce: '{}', extranonce2_size: {}", extranonce, extranonce2_size);
-        tracing::debug!("[SUBSCRIBE] Bitmain response: [null, '{}', {}]", extranonce, extranonce2_size);
         JsonRpcResponse::new(
             &event,
             Some(Value::Array(vec![Value::Null, Value::String(extranonce.clone()), Value::Number(extranonce2_size.into())])),
@@ -159,31 +160,32 @@ pub async fn handle_subscribe(
         let handler = client_handler.as_ref().ok_or("Kaspa Common protocol requires a client handler")?;
         let extranonce2_size = 8usize.saturating_sub(extranonce.len() / 2);
         tracing::info!(
-            "[HANDSHAKE] sending Kaspa Common extranonce/difficulty before authorize to {}:{}",
+            "[HANDSHAKE] sending July-23 Kaspa Common extranonce/difficulty before authorize to {}:{}",
             ctx.remote_addr,
             ctx.remote_port
         );
         ctx.send_v1_notification(
             "set_extranonce",
-            vec![Value::String(extranonce.clone()), Value::Number(extranonce2_size.into())],
+            vec![
+                Value::String(extranonce.clone()),
+                Value::Number(extranonce2_size.into()),
+            ],
         )
         .await
         .map_err(|e| format!("failed to set Kaspa Common extranonce: {e}"))?;
         handler.send_subscribe_difficulty_v1(&ctx).await?;
     }
 
-    // IceRiver's official Kaspa protocol requires these server messages before
-    // the miner sends mining.authorize. Sending them only from the authorize
-    // handler creates a deadlock with rental/proxy connections: each side waits
-    // for the other until CLIENT_TIMEOUT disconnects the miner.
+    // The working 2Miners and Kaspa-pool IceRiver paths send the nonce prefix
+    // after subscribe and the difficulty only after authorize. Do not send the
+    // same values again from both phases.
     if !kaspa_common_protocol && remote_app_lower.contains("iceriver") {
-        if let Some(handler) = client_handler {
+        if client_handler.is_some() {
             tracing::info!(
-                "[HANDSHAKE] sending pre-authorize difficulty/extranonce to IceRiver {}:{}",
+                "[HANDSHAKE] sending pre-authorize extranonce to IceRiver {}:{}",
                 ctx.remote_addr,
                 ctx.remote_port
             );
-            handler.send_subscribe_difficulty(&ctx).await?;
             if !extranonce.is_empty() {
                 send_extranonce(ctx.clone()).await?;
             }
@@ -284,9 +286,11 @@ pub async fn handle_authorize(
 
     tracing::debug!("[AUTHORIZE] Final parsed - address: '{}', worker: '{}', canxium: '{}'", address, worker_name, canxium_address);
 
+    if let Some(ref client_handler) = client_handler {
+        client_handler.prepare_worker_identity_change(&ctx);
+    }
     *ctx.wallet_addr.lock() = address.clone();
-    *ctx.worker_name.lock() = worker_name;
-    ctx.ensure_default_worker_name();
+    ctx.set_authorized_worker_name(worker_name);
     let worker_name = ctx.effective_worker_name();
 
     if let Some(ref client_handler) = client_handler {
@@ -331,6 +335,10 @@ pub async fn handle_authorize(
 
     tracing::debug!("[AUTHORIZE] Authorize response sent successfully");
 
+    // Begin a fresh job-delivery epoch. The watchdog only disconnects if no
+    // work is published at all; it never treats a low share rate as failure.
+    ctx.mark_authorized();
+
     // CRITICAL: Message order for IceRiver must be:
     // 1. authorize response (done above)
     // 2. extranonce (if enabled) - MUST complete before difficulty/job
@@ -345,7 +353,9 @@ pub async fn handle_authorize(
     let kaspa_common_protocol = client_handler.as_ref().is_some_and(|handler| handler.kaspa_common_protocol());
     let is_bitmain =
         remote_app_lower.contains("godminer") || remote_app_lower.contains("bitmain") || remote_app_lower.contains("antminer");
-    if !extranonce.is_empty() && !is_bitmain && !kaspa_common_protocol {
+    let is_iceriver =
+        remote_app_lower.contains("iceriver") || remote_app_lower.contains("icemining") || remote_app_lower.contains("icm");
+    if !extranonce.is_empty() && !is_bitmain && !is_iceriver && !kaspa_common_protocol {
         tracing::debug!("[AUTHORIZE] Step 2: Sending extranonce to client {} before difficulty/job", ctx.remote_addr);
         tracing::debug!("[AUTHORIZE] Extranonce value: '{}'", extranonce);
         send_extranonce(ctx.clone()).await?;
@@ -365,6 +375,7 @@ pub async fn handle_authorize(
     // Don't wait for polling loop - send job immediately
     // Difficulty will be sent inside send_immediate_job_to_client
     if let (Some(client_handler), Some(kaspa_api)) = (client_handler, kaspa_api) {
+        client_handler.start_first_job_watchdog(ctx.clone());
         tracing::debug!(
             "[AUTHORIZE] Step 3-4: Triggering immediate job send for client {} (extranonce already sent)",
             ctx.remote_addr
@@ -419,7 +430,7 @@ fn process_canxium_address(address: &str) -> String {
 /// POOL_FALLBACK_ADDRESS env var; defaults to the ZKas pool wallet.
 fn pool_fallback_address() -> String {
     std::env::var("POOL_FALLBACK_ADDRESS")
-        .unwrap_or_else(|_| "firecash:pyfjy228l6gukj2vwztyq6q88eeyggjhvcuzf2jx8u4lvla42d6x0y3dsgp0wzggcc9cytqreh8r7mn".to_string())
+        .unwrap_or_else(|_| "zkas:py82h42m9qjff0knpcmllzq3c7qhurje5auh4tq2ceagf69wjpf23djwwmqr26zhsua8rrglrwdltsh".to_string())
 }
 
 fn clean_wallet(input: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
@@ -492,4 +503,109 @@ async fn send_extranonce(ctx: Arc<StratumContext>) -> Result<(), Box<dyn std::er
 
     tracing::debug!("[EXTRANONCE] ===== EXTRANONCE SENT TO {} =====", ctx.remote_addr);
     Ok(())
+}
+
+#[cfg(test)]
+mod protocol_wire_tests {
+    use super::*;
+    use crate::{client_handler::ClientHandler, mining_state::MiningState, share_handler::ShareHandler};
+    use serde_json::json;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::sync::mpsc;
+    use tokio::time::{Duration, timeout};
+
+    async fn context_with_peer(local_port: u16) -> (Arc<StratumContext>, BufReader<tokio::net::TcpStream>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = tokio::net::TcpStream::connect(address).await.unwrap();
+        let (server, _) = listener.accept().await.unwrap();
+        let (disconnect_tx, _disconnect_rx) = mpsc::unbounded_channel();
+        let context = StratumContext::new(
+            "127.0.0.1".to_string(),
+            12345,
+            local_port,
+            server,
+            Arc::new(MiningState::new()),
+            disconnect_tx,
+        );
+        (context, BufReader::new(peer))
+    }
+
+    async fn read_json_line(peer: &mut BufReader<tokio::net::TcpStream>) -> Value {
+        let mut line = String::new();
+        timeout(Duration::from_secs(1), peer.read_line(&mut line)).await.unwrap().unwrap();
+        serde_json::from_str(line.trim()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn godminer_uses_one_embedded_extranonce_subscribe_response() {
+        let share_handler = Arc::new(ShareHandler::new("wire-test".to_string()));
+        let handler =
+            Arc::new(ClientHandler::new(share_handler, 8192.0, HashMap::new(), 2, "wire-test".to_string()));
+        let (context, mut peer) = context_with_peer(5555).await;
+        let request = JsonRpcEvent::new(
+            Some("1".to_string()),
+            "mining.subscribe",
+            vec![json!("GodMiner/2.0.0"), json!("EthereumStratum/1.0.0")],
+        );
+
+        handle_subscribe(context, request, Some(handler)).await.unwrap();
+
+        let response = read_json_line(&mut peer).await;
+        let result = response["result"].as_array().unwrap();
+        assert!(result[0].is_null());
+        assert!(result[1].is_string());
+        assert_eq!(result[2].as_u64().unwrap(), 8 - result[1].as_str().unwrap().len() as u64 / 2);
+
+        let mut unexpected = String::new();
+        let read = timeout(Duration::from_millis(50), peer.read_line(&mut unexpected)).await;
+        assert!(
+            matches!(read, Err(_) | Ok(Ok(0))),
+            "GodMiner subscribe must not emit a second extranonce/difficulty message: {unexpected}"
+        );
+    }
+
+    #[tokio::test]
+    async fn strict_common_subscribe_preserves_july23_mrr_sequence() {
+        let share_handler = Arc::new(ShareHandler::new("wire-test".to_string()));
+        let handler = Arc::new(ClientHandler::new_with_protocol(
+            share_handler,
+            8192.0,
+            HashMap::new(),
+            2,
+            "wire-test".to_string(),
+            true,
+        ));
+        let (context, mut peer) = context_with_peer(5577).await;
+        let request = JsonRpcEvent::new(
+            Some("1".to_string()),
+            "mining.subscribe",
+            vec![json!("IceRiverMiner-v1.1"), json!("EthereumStratum/1.0.0")],
+        );
+
+        handle_subscribe(context, request, Some(handler)).await.unwrap();
+
+        let response = read_json_line(&mut peer).await;
+        assert_eq!(response["result"], json!([true, "EthereumStratum/1.0.0"]));
+        let extranonce = read_json_line(&mut peer).await;
+        assert_eq!(extranonce["id"], Value::Null);
+        assert_eq!(extranonce["method"], "set_extranonce");
+        assert_eq!(extranonce["params"].as_array().unwrap().len(), 2);
+        let difficulty = read_json_line(&mut peer).await;
+        assert_eq!(difficulty["id"], Value::Null);
+        assert_eq!(difficulty["method"], "mining.set_difficulty");
+        assert_eq!(difficulty["params"], json!([8192.0]));
+    }
+
+    #[tokio::test]
+    async fn parent_refresh_gate_coalesces_jobs_within_profile_interval() {
+        let (context, _peer) = context_with_peer(5555).await;
+        let permit = context.try_parent_refresh(Duration::from_millis(80)).expect("first parent refresh");
+        context.mark_parent_job_sent();
+        drop(permit);
+
+        assert!(context.try_parent_refresh(Duration::from_millis(80)).is_none());
+        tokio::time::sleep(Duration::from_millis(90)).await;
+        assert!(context.try_parent_refresh(Duration::from_millis(80)).is_some());
+    }
 }

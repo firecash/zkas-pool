@@ -59,6 +59,34 @@ pub enum BlockSubmitOutcome {
     RejectedByNode(SubmitBlockRejectReason),
 }
 
+/// Result of the independent Kaspa-parent leg of a merged-mining solution.
+///
+/// A parent can remain valuable to Kaspa even after another nonce has already
+/// claimed the committed ZKAS block. Keep this lifecycle separate from
+/// [`BlockSubmitOutcome`], which describes submission to the ZKAS node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergedParentSubmitOutcome {
+    NotMerged,
+    DoesNotClearKaspa,
+    NoKaspaClient,
+    Accepted,
+    Rejected(String),
+    TransportError(String),
+}
+
+impl MergedParentSubmitOutcome {
+    pub const fn metric_label(&self) -> &'static str {
+        match self {
+            Self::NotMerged => "not_merged",
+            Self::DoesNotClearKaspa => "does_not_clear",
+            Self::NoKaspaClient => "no_client",
+            Self::Accepted => "accepted",
+            Self::Rejected(_) => "rejected",
+            Self::TransportError(_) => "transport_error",
+        }
+    }
+}
+
 impl BlockSubmitOutcome {
     /// True iff the block is in kaspad's DAG (or about to be).
     #[must_use]
@@ -98,6 +126,12 @@ fn build_coinbase_tag_bytes(suffix: Option<&str>) -> Vec<u8> {
         tag.push(b'/');
         tag.extend_from_slice(suffix.as_bytes());
     }
+    tag
+}
+
+fn build_lane_coinbase_tag(base: &[u8], session_uid: u64, generation: u64) -> Vec<u8> {
+    let mut tag = base.to_vec();
+    tag.extend_from_slice(format!("/s{session_uid:016x}/g{generation:016x}").as_bytes());
     tag
 }
 
@@ -179,6 +213,9 @@ pub static NODE_STATUS: Lazy<Mutex<NodeStatusSnapshot>> = Lazy::new(|| Mutex::ne
 pub struct KaspaApi {
     client: Arc<GrpcClient>,
     notification_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<Notification>>>>,
+    /// Independent template stream from the real Kaspa parent node. ZKAS is
+    /// 1 BPS, while Kaspa parent work changes at roughly 10 BPS.
+    kaspa_notification_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<Notification>>>>,
     connected: Arc<Mutex<bool>>,
     coinbase_tag: Vec<u8>,
     /// katpool fork addition. When `Some`, every
@@ -210,13 +247,14 @@ pub struct KaspaApi {
     /// The `kaspa:` address each real parent's coinbase pays. Set from
     /// `ZKAS_KASPA_PAY` (or legacy `FIRECASH_KASPA_PAY`).
     kaspa_pay: Option<Address>,
-    /// Coalescing cache for the Kaspa parent template: `(h_fc, parent, fetched_at)`.
-    /// Without this, every worker's `get_block_template` fetched its own parent on the
-    /// single shared gRPC client — ~100 workers stampeding it, so most fetches failed
-    /// and fell back to the (KAS-worthless) synthetic parent. All workers sharing the
-    /// current FC template also share its `h_fc`, so one fetch per refresh window serves
-    /// the whole fleet with a REAL, fresh parent.
+    /// Short-lived exact-H_fc cache for duplicate requests. Solo lanes use
+    /// distinct H_fc values, so fleet-wide pressure is controlled by
+    /// `kaspa_parent_rpc_gate`, not by pretending all miners share one parent.
     kaspa_parent_cache: Arc<tokio::sync::Mutex<Option<(kaspa_hashes::Hash, Block, Instant)>>>,
+    /// Bound parent-template RPC concurrency. Unique solo lanes necessarily
+    /// use distinct H_fc commitments, so a single global mutex would serialize
+    /// the entire fleet; unbounded fan-out would overload one gRPC route.
+    kaspa_parent_rpc_gate: Arc<tokio::sync::Semaphore>,
 }
 
 /// How long a cached Kaspa parent is reused before refetching. Kaspa makes a tip
@@ -364,7 +402,9 @@ impl KaspaApi {
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
         if merged_mining {
-            info!("Merged-mining (AuxPoW) mode ENABLED: ASICs hash a parent committing to the ZKas block; solved parents are submitted as ZKas aux blocks");
+            info!(
+                "Merged-mining (AuxPoW) mode ENABLED: ASICs hash a parent committing to the ZKas block; solved parents are submitted as ZKas aux blocks"
+            );
         }
 
         // Real dual-chain: connect to the upstream Kaspa node so the *same* solved
@@ -379,7 +419,18 @@ impl KaspaApi {
                 (None, None)
             } else {
                 let grpc = if node.starts_with("grpc://") { node.clone() } else { format!("grpc://{node}") };
-                match GrpcClient::connect_with_args(NotificationMode::Direct, grpc, None, true, None, false, Some(500_000), Default::default()).await {
+                match GrpcClient::connect_with_args(
+                    NotificationMode::Direct,
+                    grpc,
+                    None,
+                    true,
+                    None,
+                    false,
+                    Some(500_000),
+                    Default::default(),
+                )
+                .await
+                {
                     Ok(kc) => match Address::try_from(pay.as_str()) {
                         Ok(addr) => {
                             info!("Real merged mining ENABLED: parent from Kaspa node {node}, KAS coinbase pays {pay}");
@@ -400,9 +451,32 @@ impl KaspaApi {
             (None, None)
         };
 
+        let kaspa_notification_rx = if let Some(kc) = kaspa_client.as_ref() {
+            match kc.start_notify(ListenerId::default(), NewBlockTemplateScope {}.into()).await {
+                Ok(()) => {
+                    let receiver = kc.notification_channel_receiver();
+                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                    let receiver_clone = receiver.clone();
+                    tokio::spawn(async move {
+                        while let Ok(notification) = receiver_clone.recv().await {
+                            let _ = tx.send(notification);
+                        }
+                    });
+                    Arc::new(Mutex::new(Some(rx)))
+                }
+                Err(e) => {
+                    warn!("failed to subscribe to Kaspa parent-template notifications ({e}); using parent ticker fallback");
+                    Arc::new(Mutex::new(None))
+                }
+            }
+        } else {
+            Arc::new(Mutex::new(None))
+        };
+
         let api = Arc::new(Self {
             client,
             notification_rx,
+            kaspa_notification_rx,
             connected: Arc::new(Mutex::new(true)),
             coinbase_tag,
             coinbase_address_override,
@@ -411,6 +485,7 @@ impl KaspaApi {
             kaspa_client,
             kaspa_pay,
             kaspa_parent_cache: Arc::new(tokio::sync::Mutex::new(None)),
+            kaspa_parent_rpc_gate: Arc::new(tokio::sync::Semaphore::new(4)),
         });
 
         // Start network stats thread
@@ -478,11 +553,7 @@ impl KaspaApi {
             // `block_count` — on a pruned node block_count is only the retained-block tally
             // (~115K here) and reads as a stale/wrong height while the chain is actually at
             // DAA ~334K.
-            record_network_stats(
-                hashrate_response.network_hashes_per_second,
-                dag_response.virtual_daa_score,
-                dag_response.difficulty,
-            );
+            record_network_stats(hashrate_response.network_hashes_per_second, dag_response.virtual_daa_score, dag_response.difficulty);
         }
     }
 
@@ -542,27 +613,37 @@ impl KaspaApi {
     /// parent is a valid Kaspa block that both (a) can be submitted to Kaspa for KAS and
     /// (b) proves the ZKas block via AuxPoW. Errs if the Kaspa client/pay address is
     /// unset (caller falls back to a synthetic parent).
-    async fn fetch_kaspa_parent(&self, h_fc: kaspa_hashes::Hash) -> Result<Block> {
+    async fn fetch_kaspa_parent(&self, h_fc: kaspa_hashes::Hash, force: bool) -> Result<Block> {
         let kc = self.kaspa_client.as_ref().ok_or_else(|| anyhow::anyhow!("no Kaspa node client"))?;
         let pay = self.kaspa_pay.clone().ok_or_else(|| anyhow::anyhow!("no Kaspa pay address"))?;
 
-        // Coalesce: hold the cache lock so concurrent workers don't stampede the single
-        // gRPC client. A fresh cached parent committing to the same h_fc is reused; only
-        // one worker per TTL actually calls the node.
-        let mut cache = self.kaspa_parent_cache.lock().await;
-        if let Some((ch, parent, at)) = cache.as_ref() {
-            if *ch == h_fc && at.elapsed() < KASPA_PARENT_TTL {
-                return Ok(parent.clone());
+        {
+            let cache = self.kaspa_parent_cache.lock().await;
+            if let Some((ch, parent, at)) = cache.as_ref() {
+                if !force && *ch == h_fc && at.elapsed() < KASPA_PARENT_TTL {
+                    return Ok(parent.clone());
+                }
             }
         }
+        let _permit = self.kaspa_parent_rpc_gate.acquire().await.context("Kaspa parent RPC gate closed")?;
         let extra_data = kaspa_consensus_core::auxpow::AuxPow::embed_commitment(&[], h_fc, &[]);
-        let resp = kc
-            .get_block_template_call(None, GetBlockTemplateRequest::new(pay, extra_data))
-            .await
-            .context("kaspa getBlockTemplate")?;
+        let resp =
+            kc.get_block_template_call(None, GetBlockTemplateRequest::new(pay, extra_data)).await.context("kaspa getBlockTemplate")?;
         let parent = Block::try_from(resp.block).map_err(|e| anyhow::anyhow!("kaspa block conversion: {e:?}"))?;
-        *cache = Some((h_fc, parent.clone(), Instant::now()));
+        *self.kaspa_parent_cache.lock().await = Some((h_fc, parent.clone(), Instant::now()));
         Ok(parent)
+    }
+
+    pub async fn refresh_merged_parent(&self, current_parent: &Block) -> Result<Option<Block>> {
+        if !self.merged_mining || self.kaspa_client.is_none() {
+            return Ok(None);
+        }
+        let h_fc =
+            crate::merged::committed_h_fc(current_parent).ok_or_else(|| anyhow::anyhow!("merged parent has no ZKMM commitment"))?;
+        if !self.pending_fc.lock().is_unsolved(&h_fc) {
+            return Ok(None);
+        }
+        self.fetch_kaspa_parent(h_fc, true).await.map(Some)
     }
 
     /// In real merged mining the parent carries the *Kaspa* target (`header.bits`), but
@@ -591,6 +672,57 @@ impl KaspaApi {
             return None;
         }
         crate::merged::committed_h_fc(parent_block)
+    }
+
+    pub fn claim_network_solution(&self, job_block: &Block) -> bool {
+        if !self.merged_mining {
+            return true;
+        }
+        let Some(h_fc) = crate::merged::committed_h_fc(job_block) else {
+            return true;
+        };
+        self.pending_fc.lock().claim_solution(h_fc)
+    }
+
+    /// Independently submit a solved merged-mining parent to Kaspa.
+    ///
+    /// This must run before ZKAS `H_fc` deduplication. A second nonce for an
+    /// already-claimed ZKAS commitment cannot mint another ZKAS block, but it
+    /// is still a distinct, potentially reward-bearing Kaspa block.
+    pub async fn submit_merged_parent_if_solved(&self, parent: &Block) -> MergedParentSubmitOutcome {
+        if !self.merged_mining {
+            return MergedParentSubmitOutcome::NotMerged;
+        }
+
+        let (clears_kaspa, _) = kaspa_pow::State::new(&parent.header).check_pow(parent.header.nonce);
+        if !clears_kaspa {
+            return MergedParentSubmitOutcome::DoesNotClearKaspa;
+        }
+
+        let Some(kc) = &self.kaspa_client else {
+            return MergedParentSubmitOutcome::NoKaspaClient;
+        };
+
+        let kaspa_hash = kaspa_consensus_core::hashing::header::hash(&parent.header).to_string();
+        let rpc_parent: RpcRawBlock = parent.into();
+        match kc.submit_block_call(None, SubmitBlockRequest::new(rpc_parent, false)).await {
+            Ok(response) => match response.report {
+                SubmitBlockReport::Success => {
+                    info!("{} KASPA BLOCK FOUND & accepted! hash={}", LogColors::block("[MERGED]"), kaspa_hash);
+                    MergedParentSubmitOutcome::Accepted
+                }
+                SubmitBlockReport::Reject(reason) => {
+                    let reason = format!("{reason:?}");
+                    warn!("{} Kaspa block rejected ({}) hash={}", LogColors::block("[MERGED]"), reason, kaspa_hash);
+                    MergedParentSubmitOutcome::Rejected(reason)
+                }
+            },
+            Err(error) => {
+                let error = error.to_string();
+                warn!("{} Kaspa submit transport error: {}", LogColors::block("[MERGED]"), error);
+                MergedParentSubmitOutcome::TransportError(error)
+            }
+        }
     }
 
     /// Submit a block to kaspad.
@@ -629,29 +761,6 @@ impl KaspaApi {
         // parent's kHeavyHash) and submit that instead. The aux rides on
         // `RpcRawHeader.aux_pow`, so the `(&block).into()` conversion below transmits it.
         let block = if self.merged_mining {
-            // The raw solved `block` is the real Kaspa parent. If its kHeavyHash clears
-            // the (harder) Kaspa target, submit it to the Kaspa node for the KAS reward —
-            // the very same nonce also proves the ZKas aux block assembled below, so
-            // one unit of work pays both chains. Kaspa submission is best-effort: a reject
-            // (stale tip race) or missing Kaspa client never blocks the ZKas aux path.
-            if let Some(kc) = &self.kaspa_client {
-                let (clears_kaspa, _) = kaspa_pow::State::new(&block.header).check_pow(block.header.nonce);
-                if clears_kaspa {
-                    let kaspa_hash = kaspa_consensus_core::hashing::header::hash(&block.header).to_string();
-                    let rpc_parent: RpcRawBlock = (&block).into();
-                    match kc.submit_block_call(None, SubmitBlockRequest::new(rpc_parent, false)).await {
-                        Ok(r) => match r.report {
-                            SubmitBlockReport::Success => {
-                                info!("{} KASPA BLOCK FOUND & accepted! hash={}", LogColors::block("[MERGED]"), kaspa_hash)
-                            }
-                            SubmitBlockReport::Reject(reason) => {
-                                warn!("{} Kaspa block rejected ({:?}) hash={}", LogColors::block("[MERGED]"), reason, kaspa_hash)
-                            }
-                        },
-                        Err(e) => warn!("{} Kaspa submit transport error: {}", LogColors::block("[MERGED]"), e),
-                    }
-                }
-            }
             // Assemble the ZKas block carrying the AuxPoW proof from the same parent.
             match crate::merged::committed_h_fc(&block).and_then(|h| self.pending_fc.lock().get(&h)) {
                 Some(fc_block) => crate::merged::assemble_aux_block(&block, &fc_block),
@@ -967,7 +1076,14 @@ impl KaspaApi {
     }
 
     /// Get block template for a client
-    pub async fn get_block_template(&self, wallet_addr: &str, _remote_app: &str, _canxium_addr: &str) -> Result<Block> {
+    pub async fn get_block_template(
+        &self,
+        wallet_addr: &str,
+        _remote_app: &str,
+        _canxium_addr: &str,
+        session_uid: u64,
+        generation: u64,
+    ) -> Result<Block> {
         // Retry up to 3 times if we get "Odd number of digits" error
         // This error can occur if the block template has malformed hash fields
         let max_retries = 3;
@@ -983,11 +1099,13 @@ impl KaspaApi {
             let address = resolve_coinbase_recipient(&self.coinbase_address_override, wallet_addr)?;
 
             // Request block template using RPC client wrapper
-            let response = match self
-                .client
-                .get_block_template_call(None, GetBlockTemplateRequest::new(address, self.coinbase_tag.clone()))
-                .await
-            {
+            // Zero-fee solo mining pays `address` directly. The lane suffix
+            // changes only miner extra-data, producing a distinct coinbase,
+            // merkle root and ZKAS `H_fc` for every connection/generation.
+            // The node's canonical cached-template modifier performs all
+            // consensus serialization; the bridge must not hand-build it.
+            let coinbase_tag = build_lane_coinbase_tag(&self.coinbase_tag, session_uid, generation);
+            let response = match self.client.get_block_template_call(None, GetBlockTemplateRequest::new(address, coinbase_tag)).await {
                 Ok(r) => r,
                 Err(e) => {
                     if attempt < max_retries - 1 {
@@ -1019,7 +1137,7 @@ impl KaspaApi {
                                 // ZKas block's hash. Stash the ZKas block so a solved parent
                                 // can be turned back into an aux block in `submit_block`.
                                 let h_fc = block.header.hash;
-                                let parent = match self.fetch_kaspa_parent(h_fc).await {
+                                let parent = match self.fetch_kaspa_parent(h_fc, false).await {
                                     // Real dual-chain: a genuine Kaspa block whose coinbase commits to
                                     // H_fc — clearing its (hard) target also earns KAS.
                                     Ok(p) => p,
@@ -1027,7 +1145,9 @@ impl KaspaApi {
                                     // aux blocks keep flowing (no KAS, but the chain stays live).
                                     Err(e) => {
                                         if self.kaspa_client.is_some() {
-                                            warn!("merged: Kaspa parent fetch failed ({e}); using synthetic parent this round (no KAS)");
+                                            warn!(
+                                                "merged: Kaspa parent fetch failed ({e}); using synthetic parent this round (no KAS)"
+                                            );
                                         }
                                         crate::merged::build_parent_block(&block).0
                                     }
@@ -1256,10 +1376,77 @@ impl KaspaApi {
 
         Ok(())
     }
+
+    /// Drive parent-only refreshes on the real Kaspa clock without rebuilding
+    /// the 1-BPS ZKAS template/H_fc.
+    pub fn start_kaspa_parent_template_listener<F>(self: &Arc<Self>, mut shutdown_rx: Option<watch::Receiver<bool>>, mut parent_cb: F)
+    where
+        F: FnMut() + Send + 'static,
+    {
+        if self.kaspa_client.is_none() {
+            return;
+        }
+        let mut rx = self.kaspa_notification_rx.lock().take();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(KASPA_PARENT_TTL);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                if let Some(ref mut shutdown) = shutdown_rx {
+                    tokio::select! {
+                        _ = shutdown.changed() => {
+                            if *shutdown.borrow() { break; }
+                        }
+                        notification = async {
+                            match rx.as_mut() {
+                                Some(receiver) => receiver.recv().await,
+                                None => std::future::pending().await,
+                            }
+                        } => {
+                            if matches!(notification, Some(Notification::NewBlockTemplate(_))) {
+                                if let Some(receiver) = rx.as_mut() {
+                                    while receiver.try_recv().is_ok() {}
+                                }
+                                parent_cb();
+                            } else if notification.is_none() {
+                                rx = None;
+                            }
+                        }
+                        _ = ticker.tick() => parent_cb(),
+                    }
+                } else {
+                    tokio::select! {
+                        notification = async {
+                            match rx.as_mut() {
+                                Some(receiver) => receiver.recv().await,
+                                None => std::future::pending().await,
+                            }
+                        } => {
+                            if matches!(notification, Some(Notification::NewBlockTemplate(_))) {
+                                if let Some(receiver) = rx.as_mut() {
+                                    while receiver.try_recv().is_ok() {}
+                                }
+                                parent_cb();
+                            } else if notification.is_none() {
+                                rx = None;
+                            }
+                        }
+                        _ = ticker.tick() => parent_cb(),
+                    }
+                }
+            }
+        });
+    }
 }
 
 #[async_trait::async_trait]
 impl KaspaApiTrait for KaspaApi {
+    async fn submit_merged_parent_if_solved(
+        &self,
+        parent: &Block,
+    ) -> crate::kaspaapi::MergedParentSubmitOutcome {
+        KaspaApi::submit_merged_parent_if_solved(self, parent).await
+    }
+
     fn merged_fc_target(&self, parent_block: &Block) -> Option<num_bigint::BigUint> {
         KaspaApi::merged_fc_target(self, parent_block)
     }
@@ -1268,13 +1455,25 @@ impl KaspaApiTrait for KaspaApi {
         KaspaApi::merged_chain_hash(self, parent_block)
     }
 
+    fn claim_network_solution(&self, job_block: &Block) -> bool {
+        KaspaApi::claim_network_solution(self, job_block)
+    }
+
+    async fn refresh_merged_parent(&self, current_parent: &Block) -> Result<Option<Block>, Box<dyn std::error::Error + Send + Sync>> {
+        KaspaApi::refresh_merged_parent(self, current_parent)
+            .await
+            .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error + Send + Sync>)
+    }
+
     async fn get_block_template(
         &self,
         wallet_addr: &str,
         _remote_app: &str,
         _canxium_addr: &str,
+        session_uid: u64,
+        generation: u64,
     ) -> Result<Block, Box<dyn std::error::Error + Send + Sync>> {
-        KaspaApi::get_block_template(self, wallet_addr, "", "").await.map_err(|e| {
+        KaspaApi::get_block_template(self, wallet_addr, "", "", session_uid, generation).await.map_err(|e| {
             let error_msg = e.to_string();
             Box::new(std::io::Error::other(error_msg)) as Box<dyn std::error::Error + Send + Sync>
         })
@@ -1337,12 +1536,10 @@ mod coinbase_recipient_tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
     use super::*;
 
-    // Both addresses are freshly-generated testnet keypairs
-    // (`gen_testnet_addr` example) — distinct so the test can
-    // assert override-replaces-miner without false positives
-    // when override == miner.
-    const MINER_ADDR: &str = "kaspatest:qzcf94f8pzhtgzy8fpprvv0ag28f9zf9fks6mnu334c8nm5qtne2shh0nv9ht";
-    const POOL_ADDR: &str = "kaspatest:qqv47dr4nn4yqjnlqrkcr49j8h0ezdzhss7fjnnzha49fhvvw2fu5qqqxn0l7";
+    // Canonical ZKAS fixtures from kaspa-addresses. Keep them distinct so the
+    // override test cannot pass accidentally when override == miner.
+    const MINER_ADDR: &str = "zkas:qp0l70zd5x85ttwd6jv7g3s3a8llzj96d8dncn4zmhv4tlzx5k2jygc4lzm58";
+    const POOL_ADDR: &str = "zkas:qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq7fwd2pgv";
 
     #[test]
     fn override_replaces_miner_address_when_set() {
@@ -1374,6 +1571,25 @@ mod coinbase_recipient_tests {
         let pool = Address::try_from(POOL_ADDR).expect("valid pool address");
         let resolved = resolve_coinbase_recipient(&Some(pool.clone()), "not-a-kaspa-address").expect("resolves");
         assert_eq!(resolved, pool);
+    }
+}
+
+#[cfg(test)]
+mod solo_lane_tests {
+    use super::build_lane_coinbase_tag;
+
+    #[test]
+    fn lane_tag_is_stable_and_separates_sessions_and_generations() {
+        let base = b"RK-Stratum/zkas";
+        let a1 = build_lane_coinbase_tag(base, 7, 1);
+        let a2 = build_lane_coinbase_tag(base, 7, 2);
+        let b1 = build_lane_coinbase_tag(base, 8, 1);
+
+        assert_eq!(a1, build_lane_coinbase_tag(base, 7, 1));
+        assert_ne!(a1, a2);
+        assert_ne!(a1, b1);
+        assert!(a1.starts_with(base));
+        assert!(a1.len() < 64, "lane tag should leave ample room in the 204-byte coinbase payload");
     }
 }
 

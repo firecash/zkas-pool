@@ -1,9 +1,15 @@
 # ZKas mining pool — public stratum bridge.
-# One shared ZKas node. Port 5555 is the public auto/vardiff endpoint;
-# legacy ports 5566 and 5588 are compatibility aliases with identical settings.
-# Port 5577 uses the Kaspa Common dialect required by MRR/strict proxies.
+# One shared ZKas node. Port 5555 is the public auto/vardiff endpoint and
+# port 5577 is the fixed-difficulty MRR compatibility endpoint. Legacy ports
+# 5566, 5588, and 5599 are redirected to 5555 by
+# zkas-pool-port-aliases.service; they are intentionally not separate pool
+# instances. Miner application selection still chooses a coherent GodMiner
+# legacy or Kaspa Common profile.
 kaspad_address: "127.0.0.1:16110"
-block_wait_time: 500
+# ZKAS is 1 BPS. This is the ZKAS-template safety fallback; real Kaspa
+# parent templates are observed immediately, then notifications are coalesced
+# per miner profile (legacy ASIC default 1000ms, Common default 500ms).
+block_wait_time: 1000
 print_stats: true
 log_to_file: false
 health_check_port: ""
@@ -31,32 +37,16 @@ instances:
     shares_per_min: 20
     log_to_file: false
 
-  # Legacy low-port alias — identical auto/vardiff behavior to 5555.
-  - stratum_port: ":5566"
-    min_share_diff: 8192
-    prom_port: ":2115"
-    var_diff: true
-    shares_per_min: 20
-    log_to_file: false
-
-  # MRR / proxy — Kaspa Common wire dialect for strict Stratum proxies.
+  # MRR / proxy — fixed-difficulty compatibility endpoint. GodMiner uses its
+  # observed working embedded-extranonce legacy profile; Common-capable miners
+  # use the published Common profile.
   - stratum_port: ":5577"
+    # 8192 is a conservative rental seed, not the only valid GodMiner value:
+    # live working rigs have accepted 16384 and 32768. Keep this endpoint fixed
+    # so an intervening rental proxy sees a stable target.
     min_share_diff: 8192
     prom_port: ":2116"
-    kaspa_common_protocol: true
-    log_to_file: false
-
-  # Legacy high-port alias — identical auto/vardiff behavior to 5555.
-  - stratum_port: ":5588"
-    min_share_diff: 8192
-    prom_port: ":2117"
-    var_diff: true
+    var_diff: false
     shares_per_min: 20
-    log_to_file: false
-
-  # Test — low difficulty (CPU miners / smoke tests). Not for ASICs.
-  - stratum_port: ":5599"
-    min_share_diff: 64
-    prom_port: ":2118"
-    var_diff: true
+    kaspa_common_protocol: true
     log_to_file: false

@@ -170,6 +170,30 @@ async fn listen_and_serve_impl<T: KaspaApiTrait + Send + Sync + 'static>(
         config.kaspa_common_protocol,
     ));
 
+    // A network-target clear retires that connection's current ZKAS H_fc.
+    // Publish replacement work immediately rather than waiting for the
+    // periodic 1-BPS safety ticker or node confirmation.
+    {
+        let mut refresh_rx = share_handler.subscribe_job_refreshes();
+        let client_handler = Arc::clone(&client_handler);
+        let kaspa_api = Arc::clone(&kaspa_api);
+        tokio::spawn(async move {
+            loop {
+                match refresh_rx.recv().await {
+                    Ok(session_uid) => {
+                        if let Some(client) = client_handler.client_by_session_uid(session_uid) {
+                            client_handler.send_immediate_job_to_client(client, Arc::clone(&kaspa_api)).await;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!("job refresh coordinator lagged by {skipped} requests");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
     let shutdown_rx_for_bg = shutdown_rx.clone();
 
     // Setup default handlers
@@ -307,7 +331,45 @@ async fn listen_and_serve_impl<T: KaspaApiTrait + Send + Sync + 'static>(
 
     // If concrete KaspaApi is provided, use notification-based listener
     // Otherwise, use polling only (fallback for trait objects)
+    if concrete_kaspa_api.is_none() {
+        // Standalone multi-instance mode gives the notification receiver to
+        // the first port only. Other ports still need fresh real-Kaspa
+        // carriers, so drive their parent-only path from the 150 ms fallback.
+        let parent_client_handler = Arc::clone(&client_handler);
+        let parent_kaspa_api = Arc::clone(&kaspa_api);
+        let mut parent_shutdown = shutdown_rx_for_bg.as_ref().cloned();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(150));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                if let Some(ref mut shutdown) = parent_shutdown {
+                    tokio::select! {
+                        _ = shutdown.changed() => {
+                            if *shutdown.borrow() { break; }
+                        }
+                        _ = interval.tick() => {
+                            parent_client_handler.new_parent_available(Arc::clone(&parent_kaspa_api)).await;
+                        }
+                    }
+                } else {
+                    interval.tick().await;
+                    parent_client_handler.new_parent_available(Arc::clone(&parent_kaspa_api)).await;
+                }
+            }
+        });
+    }
+
     if let Some(concrete_api) = concrete_kaspa_api {
+        let parent_client_handler = Arc::clone(&client_handler);
+        let parent_kaspa_api = Arc::clone(&kaspa_api);
+        concrete_api.start_kaspa_parent_template_listener(shutdown_rx_for_bg.as_ref().cloned(), move || {
+            let client_handler = Arc::clone(&parent_client_handler);
+            let kaspa_api = Arc::clone(&parent_kaspa_api);
+            tokio::spawn(async move {
+                client_handler.new_parent_available(kaspa_api).await;
+            });
+        });
+
         // We have concrete KaspaApi - use notification-based listener
         let client_handler_cb = Arc::clone(&client_handler);
         let kaspa_api_cb = Arc::clone(&kaspa_api);
@@ -324,9 +386,9 @@ async fn listen_and_serve_impl<T: KaspaApiTrait + Send + Sync + 'static>(
         // Method signature: start_block_template_listener(self: Arc<Self>, ...)
         // Call the method directly on Arc<KaspaApi> (it's an instance method taking Arc<Self>)
         let listener_result = if let Some(rx) = shutdown_rx_for_bg.as_ref().cloned() {
-            concrete_api.start_block_template_listener_with_shutdown(config.block_wait_time, rx, block_cb).await
+            Arc::clone(&concrete_api).start_block_template_listener_with_shutdown(config.block_wait_time, rx, block_cb).await
         } else {
-            concrete_api.start_block_template_listener(config.block_wait_time, block_cb).await
+            Arc::clone(&concrete_api).start_block_template_listener(config.block_wait_time, block_cb).await
         };
 
         if let Err(e) = listener_result {

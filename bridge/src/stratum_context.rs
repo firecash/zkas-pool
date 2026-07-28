@@ -4,7 +4,7 @@ use hex;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -41,6 +41,7 @@ pub struct StratumContext {
     pub local_port: u16,
     pub wallet_addr: Arc<Mutex<String>>,
     pub worker_name: Arc<Mutex<String>>,
+    worker_name_supplied: Arc<AtomicBool>,
     pub canxium_addr: Arc<Mutex<String>>,
     pub remote_app: Arc<Mutex<String>>,
     pub id: Arc<Mutex<i32>>,
@@ -49,9 +50,26 @@ pub struct StratumContext {
     /// Process-unique connection id correlating this connection's
     /// `SessionOpened`/`SessionClosed` lifecycle events.
     session_uid: u64,
+    /// Monotonic ZKAS-template generation for this connection. Together with
+    /// `session_uid`, this is embedded in coinbase extra-data so two solo
+    /// miners paying the same wallet never share an `H_fc`.
+    template_generation: Arc<AtomicU64>,
+    /// Serialize full-template and parent-only refreshes for this client.
+    job_build_lock: Arc<tokio::sync::Mutex<()>>,
+    parent_refresh_gate: Arc<tokio::sync::Semaphore>,
+    /// Last parent-only job actually published to this connection. Kaspa can
+    /// produce parent templates faster than some ASIC firmware can switch
+    /// work, so parent notifications are coalesced per connection.
+    last_parent_job_at: Arc<Mutex<Option<Instant>>>,
+    /// Authorization time and last successfully published job. These are used
+    /// only by the first-job watchdog; a lack of shares after authorization is
+    /// not itself considered failure because low-hashrate miners may be idle.
+    authorized_at: Arc<Mutex<Option<Instant>>>,
+    last_job_sent_at: Arc<Mutex<Option<Instant>>>,
     /// One-shot guard so `SessionOpened` is emitted at most once per
     /// connection even if the miner re-authorizes.
     session_opened: AtomicBool,
+    vardiff_registered: Arc<AtomicBool>,
     disconnecting: Arc<AtomicBool>,
     write_lock: Arc<AtomicBool>,
     read_half: Arc<Mutex<Option<tokio::io::ReadHalf<TcpStream>>>>,
@@ -75,13 +93,21 @@ impl StratumContext {
             local_port,
             wallet_addr: Arc::new(Mutex::new(String::new())),
             worker_name: Arc::new(Mutex::new(String::new())),
+            worker_name_supplied: Arc::new(AtomicBool::new(false)),
             canxium_addr: Arc::new(Mutex::new(String::new())),
             remote_app: Arc::new(Mutex::new(String::new())),
             id: Arc::new(Mutex::new(0)),
             extranonce: Arc::new(Mutex::new(String::new())),
             state,
             session_uid: NEXT_SESSION_UID.fetch_add(1, Ordering::Relaxed),
+            template_generation: Arc::new(AtomicU64::new(0)),
+            job_build_lock: Arc::new(tokio::sync::Mutex::new(())),
+            parent_refresh_gate: Arc::new(tokio::sync::Semaphore::new(1)),
+            last_parent_job_at: Arc::new(Mutex::new(None)),
+            authorized_at: Arc::new(Mutex::new(None)),
+            last_job_sent_at: Arc::new(Mutex::new(None)),
             session_opened: AtomicBool::new(false),
+            vardiff_registered: Arc::new(AtomicBool::new(false)),
             disconnecting: Arc::new(AtomicBool::new(false)),
             write_lock: Arc::new(AtomicBool::new(false)),
             read_half: Arc::new(Mutex::new(Some(read_half))),
@@ -93,6 +119,23 @@ impl StratumContext {
     /// Check if client is connected
     pub fn connected(&self) -> bool {
         !self.disconnecting.load(Ordering::Acquire)
+    }
+
+    /// Ask compatible Stratum V1 clients to reconnect to an approved failover
+    /// endpoint. This is only a hint; clients that do not implement
+    /// `client.reconnect` will simply be disconnected by the caller.
+    pub async fn send_reconnect_hint(&self, host: &str, port: u16, wait_secs: u64) -> Result<(), ErrorDisconnected> {
+        let event = JsonRpcEvent {
+            jsonrpc: "2.0".to_string(),
+            method: "client.reconnect".to_string(),
+            id: None,
+            params: vec![
+                serde_json::Value::String(host.to_string()),
+                serde_json::Value::Number(port.into()),
+                serde_json::Value::Number(wait_secs.into()),
+            ],
+        };
+        self.send(event).await.map_err(|_| ErrorDisconnected)
     }
 
     /// Get client ID
@@ -111,11 +154,69 @@ impl StratumContext {
         self.session_uid
     }
 
+    /// Allocate the next ZKAS-template generation for this connection.
+    pub fn next_template_generation(&self) -> u64 {
+        self.template_generation.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Serialize job construction and publication for this connection.
+    pub async fn lock_job_build(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.job_build_lock).lock_owned().await
+    }
+
+    pub fn try_lock_job_build(&self) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        Arc::clone(&self.job_build_lock).try_lock_owned().ok()
+    }
+
+    pub fn try_parent_refresh(&self, minimum_interval: Duration) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        if self.last_parent_job_at.lock().as_ref().is_some_and(|at| at.elapsed() < minimum_interval) {
+            return None;
+        }
+        let permit = Arc::clone(&self.parent_refresh_gate).try_acquire_owned().ok()?;
+        // Recheck after owning the gate so two callbacks that raced before
+        // acquisition cannot both publish within the interval.
+        if self.last_parent_job_at.lock().as_ref().is_some_and(|at| at.elapsed() < minimum_interval) {
+            return None;
+        }
+        Some(permit)
+    }
+
+    pub fn mark_parent_job_sent(&self) {
+        *self.last_parent_job_at.lock() = Some(Instant::now());
+    }
+
+    /// Start a new authorization epoch. Re-authorization must require a fresh
+    /// job, otherwise a stale job from an earlier identity could satisfy the
+    /// watchdog.
+    pub fn mark_authorized(&self) {
+        *self.authorized_at.lock() = Some(Instant::now());
+        *self.last_job_sent_at.lock() = None;
+    }
+
+    /// Record a successful `mining.notify` publication.
+    pub fn mark_job_sent(&self) {
+        *self.last_job_sent_at.lock() = Some(Instant::now());
+    }
+
+    pub fn received_job_since_authorization(&self) -> bool {
+        let authorized_at = *self.authorized_at.lock();
+        let job_at = *self.last_job_sent_at.lock();
+        matches!((authorized_at, job_at), (Some(a), Some(j)) if j >= a)
+    }
+
     /// Claim the one-shot "session opened" flag. Returns `true` exactly
     /// once per connection (the caller that should emit `SessionOpened`);
     /// subsequent calls return `false`.
     pub fn claim_session_open(&self) -> bool {
         !self.session_opened.swap(true, Ordering::SeqCst)
+    }
+
+    pub fn claim_vardiff_registration(&self) -> bool {
+        !self.vardiff_registered.swap(true, Ordering::SeqCst)
+    }
+
+    pub fn release_vardiff_registration(&self) -> bool {
+        self.vardiff_registered.swap(false, Ordering::SeqCst)
     }
 
     /// Get context summary
@@ -149,6 +250,20 @@ impl StratumContext {
             return;
         }
         *name = if let Some(id) = self.id() { format!("asic-{}", id) } else { format!("asic-{}", self.remote_port) };
+    }
+
+    /// Store the worker parsed from an authorize request while remembering
+    /// whether it was miner-supplied or merely a per-connection display name.
+    pub fn set_authorized_worker_name(&self, worker_name: String) {
+        self.worker_name_supplied.store(!worker_name.trim().is_empty(), Ordering::SeqCst);
+        *self.worker_name.lock() = worker_name;
+        self.ensure_default_worker_name();
+    }
+
+    /// Stable worker component for reconnect state. Generated `asic-{id}`
+    /// labels are intentionally excluded because the id changes on reconnect.
+    pub fn vardiff_worker_identity(&self) -> String {
+        if self.worker_name_supplied.load(Ordering::SeqCst) { self.worker_name.lock().clone() } else { String::new() }
     }
 
     /// Worker label for stats, Prometheus, and dashboard (never empty after authorize).
@@ -712,6 +827,7 @@ impl Clone for StratumContext {
             local_port: self.local_port,
             wallet_addr: self.wallet_addr.clone(),
             worker_name: self.worker_name.clone(),
+            worker_name_supplied: self.worker_name_supplied.clone(),
             canxium_addr: self.canxium_addr.clone(),
             remote_app: self.remote_app.clone(),
             id: self.id.clone(),
@@ -720,7 +836,14 @@ impl Clone for StratumContext {
             // A clone represents the same connection: keep its id and
             // preserve the one-shot open flag so it can't re-emit.
             session_uid: self.session_uid,
+            template_generation: self.template_generation.clone(),
+            job_build_lock: self.job_build_lock.clone(),
+            parent_refresh_gate: self.parent_refresh_gate.clone(),
+            last_parent_job_at: self.last_parent_job_at.clone(),
+            authorized_at: self.authorized_at.clone(),
+            last_job_sent_at: self.last_job_sent_at.clone(),
             session_opened: AtomicBool::new(self.session_opened.load(Ordering::SeqCst)),
+            vardiff_registered: self.vardiff_registered.clone(),
             disconnecting: self.disconnecting.clone(),
             write_lock: self.write_lock.clone(),
             read_half: self.read_half.clone(),

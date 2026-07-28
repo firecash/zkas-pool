@@ -19,7 +19,7 @@
 //! `getBlockTemplate` (and also submitting winning parents to Kaspa) is what adds the
 //! second-chain reward — the struct is identical, only the parent's source changes.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use kaspa_consensus_core::{
     auxpow::AuxPow, block::Block, hashing, header::Header, merkle::calc_hash_merkle_root, subnets::SUBNETWORK_ID_COINBASE,
@@ -85,7 +85,8 @@ pub fn build_parent_block(fc_block: &Block) -> (Block, Hash) {
 /// no valid commitment (i.e. this wasn't a merged-mining parent).
 pub fn committed_h_fc(parent_block: &Block) -> Option<Hash> {
     let coinbase = parent_block.transactions.first()?.clone();
-    AuxPow { parent_header: (*parent_block.header).clone(), parent_coinbase: coinbase, coinbase_merkle_branch: vec![] }.committed_hash()
+    AuxPow { parent_header: (*parent_block.header).clone(), parent_coinbase: coinbase, coinbase_merkle_branch: vec![] }
+        .committed_hash()
 }
 
 /// Assemble the ZKas block carrying the AuxPoW proof, from the solved `parent_block`
@@ -107,12 +108,13 @@ pub fn assemble_aux_block(parent_block: &Block, fc_block: &Block) -> Block {
 pub struct MergedPending {
     map: HashMap<Hash, Block>,
     order: VecDeque<Hash>,
+    solved: HashSet<Hash>,
     cap: usize,
 }
 
 impl MergedPending {
     pub fn new(cap: usize) -> Self {
-        Self { map: HashMap::new(), order: VecDeque::new(), cap: cap.max(1) }
+        Self { map: HashMap::new(), order: VecDeque::new(), solved: HashSet::new(), cap: cap.max(1) }
     }
 
     pub fn insert(&mut self, h_fc: Hash, fc_block: Block) {
@@ -121,6 +123,7 @@ impl MergedPending {
             while self.order.len() > self.cap {
                 if let Some(old) = self.order.pop_front() {
                     self.map.remove(&old);
+                    self.solved.remove(&old);
                 }
             }
         }
@@ -128,6 +131,14 @@ impl MergedPending {
 
     pub fn get(&self, h_fc: &Hash) -> Option<Block> {
         self.map.get(h_fc).cloned()
+    }
+
+    pub fn claim_solution(&mut self, h_fc: Hash) -> bool {
+        self.map.contains_key(&h_fc) && self.solved.insert(h_fc)
+    }
+
+    pub fn is_unsolved(&self, h_fc: &Hash) -> bool {
+        self.map.contains_key(h_fc) && !self.solved.contains(h_fc)
     }
 }
 
@@ -142,6 +153,35 @@ mod tests {
     fn tx(tag: u8) -> Transaction {
         use kaspa_consensus_core::subnets::SUBNETWORK_ID_NATIVE;
         Transaction::new(0, vec![], vec![], 0, SUBNETWORK_ID_NATIVE, 0, vec![tag; 16])
+    }
+
+    #[test]
+    fn h_fc_solution_can_be_claimed_only_once() {
+        let block = Block::new(Header::from_precomputed_hash(Hash::from_bytes([7; 32]), vec![]), vec![]);
+        let h_fc = block.header.hash;
+        let mut pending = MergedPending::new(4);
+        pending.insert(h_fc, block);
+
+        assert!(pending.is_unsolved(&h_fc));
+        assert!(pending.claim_solution(h_fc));
+        assert!(!pending.is_unsolved(&h_fc));
+        assert!(!pending.claim_solution(h_fc));
+    }
+
+    #[test]
+    fn evicting_pending_work_also_evicts_solved_marker() {
+        let first = Block::new(Header::from_precomputed_hash(Hash::from_bytes([1; 32]), vec![]), vec![]);
+        let second = Block::new(Header::from_precomputed_hash(Hash::from_bytes([2; 32]), vec![]), vec![]);
+        let first_hash = first.header.hash;
+        let second_hash = second.header.hash;
+        let mut pending = MergedPending::new(1);
+        pending.insert(first_hash, first);
+        assert!(pending.claim_solution(first_hash));
+        pending.insert(second_hash, second);
+
+        assert!(!pending.is_unsolved(&first_hash));
+        assert!(!pending.claim_solution(first_hash));
+        assert!(pending.is_unsolved(&second_hash));
     }
 
     /// For every parent size 1..=9, the branch we build must fold the coinbase back to

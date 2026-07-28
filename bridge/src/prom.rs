@@ -46,6 +46,9 @@ static BLOCK_ACCEPTED_COUNTER: OnceLock<CounterVec> = OnceLock::new();
 
 static BLOCK_NOT_CONFIRMED_BLUE_COUNTER: OnceLock<CounterVec> = OnceLock::new();
 
+/// Independent merged-mining Kaspa-parent outcomes.
+static MERGED_PARENT_SUBMIT_COUNTER: OnceLock<CounterVec> = OnceLock::new();
+
 /// Block gauge - unique instances per block mined
 static BLOCK_GAUGE: OnceLock<GaugeVec> = OnceLock::new();
 
@@ -156,6 +159,15 @@ pub fn init_metrics() {
             "ks_blocks_not_confirmed_blue",
             "Number of node-accepted blocks that were not confirmed blue within the confirmation window",
             WORKER_LABELS
+        )
+        .unwrap()
+    });
+
+    MERGED_PARENT_SUBMIT_COUNTER.get_or_init(|| {
+        register_counter_vec!(
+            "ks_merged_parent_submit_total",
+            "Independent Kaspa parent submission outcomes, including whether the same solution won the ZKAS claim",
+            &["instance", "worker", "wallet", "outcome", "zkas_claim"]
         )
         .unwrap()
     });
@@ -670,6 +682,32 @@ pub fn worker_context(instance_id: &str, ctx: &crate::stratum_context::StratumCo
 pub fn record_block_accepted_by_node(worker: &WorkerContext) {
     if let Some(counter) = BLOCK_ACCEPTED_COUNTER.get() {
         counter.with_label_values(&worker.labels()).inc();
+    }
+}
+
+pub fn record_merged_parent_submit(
+    worker: &WorkerContext,
+    outcome: &crate::kaspaapi::MergedParentSubmitOutcome,
+    claimed_zkas: bool,
+) {
+    if matches!(
+        outcome,
+        crate::kaspaapi::MergedParentSubmitOutcome::NotMerged
+            | crate::kaspaapi::MergedParentSubmitOutcome::DoesNotClearKaspa
+    ) {
+        return;
+    }
+    if let Some(counter) = MERGED_PARENT_SUBMIT_COUNTER.get() {
+        let zkas_claim = if claimed_zkas { "first" } else { "duplicate" };
+        counter
+            .with_label_values(&[
+                worker.instance_id.as_str(),
+                worker.worker_name.as_str(),
+                worker.wallet.as_str(),
+                outcome.metric_label(),
+                zkas_claim,
+            ])
+            .inc();
     }
 }
 

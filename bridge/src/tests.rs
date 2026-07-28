@@ -91,7 +91,7 @@ fn test_parse_bool_invalid_values() {
 fn test_parse_bool_in_instance_spec() {
     // Test that parse_bool works correctly in instance spec parsing
     let spec = "port=:5555,var_diff=enable,log=disabled";
-    let result = parse_instance_spec(spec, Some(8192));
+    let result = parse_instance_spec(spec, Some(8192.0));
     assert!(result.is_ok());
     let instance = result.unwrap();
     assert!(instance.var_diff.unwrap());
@@ -99,7 +99,7 @@ fn test_parse_bool_in_instance_spec() {
 
     // Test with enabled/disabled
     let spec2 = "port=:5556,var_diff=enabled,pow2_clamp=disable";
-    let result2 = parse_instance_spec(spec2, Some(8192));
+    let result2 = parse_instance_spec(spec2, Some(8192.0));
     assert!(result2.is_ok());
     let instance2 = result2.unwrap();
     assert!(instance2.var_diff.unwrap());
@@ -144,7 +144,7 @@ print_stats: true
     let config = config.unwrap();
     assert_eq!(config.instances.len(), 1, "Should create one instance in single-instance mode");
     assert_eq!(config.instances[0].stratum_port, ":5555", "Stratum port should be parsed correctly");
-    assert_eq!(config.instances[0].min_share_diff, 8192, "Min share diff should be parsed correctly");
+    assert_eq!(config.instances[0].min_share_diff, 8192.0, "Min share diff should be parsed correctly");
     assert_eq!(config.global.kaspad_address, "127.0.0.1:16110", "Kaspad address should be stored in global config");
 }
 
@@ -163,7 +163,7 @@ print_stats: true
     let config = config.unwrap();
     assert_eq!(config.instances.len(), 1, "Should create one instance");
     assert_eq!(config.instances[0].stratum_port, ":5555", "Should use default stratum port");
-    assert_eq!(config.instances[0].min_share_diff, 8192, "Should use default min_share_diff");
+    assert_eq!(config.instances[0].min_share_diff, 8192.0, "Should use default min_share_diff");
 }
 
 #[cfg(test)]
@@ -208,9 +208,9 @@ instances:
     let config = config.unwrap();
     assert_eq!(config.instances.len(), 2, "Should create two instances");
     assert_eq!(config.instances[0].stratum_port, ":5555", "First instance port should be parsed");
-    assert_eq!(config.instances[0].min_share_diff, 8192, "First instance difficulty should be parsed");
+    assert_eq!(config.instances[0].min_share_diff, 8192.0, "First instance difficulty should be parsed");
     assert_eq!(config.instances[1].stratum_port, ":5556", "Second instance port should be parsed");
-    assert_eq!(config.instances[1].min_share_diff, 4096, "Second instance difficulty should be parsed");
+    assert_eq!(config.instances[1].min_share_diff, 4096.0, "Second instance difficulty should be parsed");
 }
 
 #[cfg(test)]
@@ -363,14 +363,14 @@ min_share_diff: 1024
     let config_missing_diff = config_missing_diff.unwrap();
     assert_eq!(config_missing_diff.instances.len(), 1);
     assert_eq!(config_missing_diff.instances[0].stratum_port, ":5555");
-    assert_eq!(config_missing_diff.instances[0].min_share_diff, 8192);
+    assert_eq!(config_missing_diff.instances[0].min_share_diff, 8192.0);
 
     let config_missing_port = BridgeConfig::from_yaml(yaml_single_missing_port);
     assert!(config_missing_port.is_ok());
     let config_missing_port = config_missing_port.unwrap();
     assert_eq!(config_missing_port.instances.len(), 1);
     assert_eq!(config_missing_port.instances[0].stratum_port, ":5555");
-    assert_eq!(config_missing_port.instances[0].min_share_diff, 1024);
+    assert_eq!(config_missing_port.instances[0].min_share_diff, 1024.0);
 }
 
 #[cfg(test)]
@@ -1016,7 +1016,7 @@ fn test_parse_instance_spec_with_all_fields() {
     assert!(result.is_ok());
     let instance = result.unwrap();
     assert_eq!(instance.stratum_port, ":5555");
-    assert_eq!(instance.min_share_diff, 8192);
+    assert_eq!(instance.min_share_diff, 8192.0);
     assert_eq!(instance.prom_port, Some(":9090".to_string()));
     assert_eq!(instance.extranonce_size, Some(4));
     assert_eq!(instance.var_diff, Some(true));
@@ -1033,7 +1033,7 @@ fn test_parse_instance_spec_with_whitespace() {
     assert!(result.is_ok());
     let instance = result.unwrap();
     assert_eq!(instance.stratum_port, ":5555");
-    assert_eq!(instance.min_share_diff, 8192);
+    assert_eq!(instance.min_share_diff, 8192.0);
 }
 
 #[cfg(test)]
@@ -1139,7 +1139,7 @@ mod integration {
             log_to_file: false,
             health_check_port: String::new(),
             block_wait_time: Duration::from_secs(1),
-            min_share_diff: 1,
+            min_share_diff: 1.0,
             var_diff: false,
             shares_per_min: 30,
             var_diff_stats: false,
@@ -1229,7 +1229,7 @@ mod integration {
             log_to_file: false,
             health_check_port: String::new(),
             block_wait_time: Duration::from_secs(1),
-            min_share_diff: 1,
+            min_share_diff: 1.0,
             var_diff: false,
             shares_per_min: 30,
             var_diff_stats: false,
@@ -1530,13 +1530,8 @@ mod comprehensive_tests {
         assert_eq!(job_id_301, 301, "Job ID should be 301");
         assert_eq!(state.current_job_counter(), 301, "Counter should be 301");
 
-        // Job 1 should be overwritten (slot 0 now has job 301)
-        // But get_job(1) will still return what's at slot 1 (which is job 2)
-        let slot_0_job = state.get_job(301);
-        assert!(slot_0_job.is_some(), "Job 301 should be at slot 0");
-
-        // Job 1 is now at slot 1%300 = slot 1, but slot 1 has job 2
-        // This demonstrates the circular buffer behavior
+        assert!(state.get_job(301).is_some(), "Job 301 should occupy its ring slot");
+        assert!(state.get_job(1).is_none(), "expired job 1 must not alias job 301");
     }
 
     #[test]

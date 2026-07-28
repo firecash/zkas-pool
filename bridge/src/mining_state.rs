@@ -24,6 +24,7 @@ pub struct Job {
 pub struct MiningState {
     jobs: Arc<Mutex<HashMap<u64, Job>>>,
     job_ids: Arc<Mutex<HashMap<u64, u64>>>, // Maps slot index to actual job ID
+    job_diffs: Arc<Mutex<HashMap<u64, KaspaDiff>>>,
     job_counter: Arc<Mutex<u64>>,
     big_diff: Arc<Mutex<BigUint>>,
     initialized: Arc<Mutex<bool>>,
@@ -39,6 +40,7 @@ impl MiningState {
         Self {
             jobs: Arc::new(Mutex::new(HashMap::new())),
             job_ids: Arc::new(Mutex::new(HashMap::new())),
+            job_diffs: Arc::new(Mutex::new(HashMap::new())),
             job_counter: Arc::new(Mutex::new(0)),
             big_diff: Arc::new(Mutex::new(BigUint::zero())),
             initialized: Arc::new(Mutex::new(false)),
@@ -59,6 +61,7 @@ impl MiningState {
 
         let mut jobs = self.jobs.lock();
         let mut job_ids = self.job_ids.lock();
+        let mut job_diffs = self.job_diffs.lock();
 
         // Log if we're overwriting an old job
         if let Some(old_id) = job_ids.get(&slot) {
@@ -67,20 +70,27 @@ impl MiningState {
 
         jobs.insert(slot, job);
         job_ids.insert(slot, idx);
+        if let Some(diff) = self.stratum_diff() {
+            job_diffs.insert(slot, diff);
+        } else {
+            job_diffs.remove(&slot);
+        }
 
         debug!("[JOB STORAGE] Added job ID {} at slot {} (counter now: {})", idx, slot, idx);
         idx
     }
 
-    /// Get a job by ID
-    /// Return job at slot (id % maxJobs) without verifying ID matches
-    ///          return job, exists
-    /// Does NOT verify that the stored job ID matches - it just returns whatever is at that slot
+    /// Get a job by its exact ID.
+    ///
+    /// The storage is a bounded ring, but an expired ID must never alias the
+    /// newer job occupying the same slot.
     pub fn get_job(&self, id: u64) -> Option<Job> {
         let jobs = self.jobs.lock();
+        let job_ids = self.job_ids.lock();
         let slot = id % MAX_JOBS;
-
-        // Return job at slot, don't verify ID matches
+        if job_ids.get(&slot).copied() != Some(id) {
+            return None;
+        }
         jobs.get(&slot).cloned()
     }
 
@@ -149,6 +159,21 @@ impl MiningState {
     pub fn get_stored_job_ids(&self) -> Vec<u64> {
         let job_ids = self.job_ids.lock();
         job_ids.values().copied().collect()
+    }
+
+    /// Return the newest exact job retained by this connection.
+    pub fn latest_job(&self) -> Option<(u64, Job)> {
+        let id = self.get_stored_job_ids().into_iter().max()?;
+        self.get_job(id).map(|job| (id, job))
+    }
+
+    /// Difficulty/target that was active when this exact job was published.
+    pub fn get_job_diff(&self, id: u64) -> Option<KaspaDiff> {
+        let slot = id % MAX_JOBS;
+        if self.job_ids.lock().get(&slot).copied() != Some(id) {
+            return None;
+        }
+        self.job_diffs.lock().get(&slot).cloned()
     }
 
     /// Get last header

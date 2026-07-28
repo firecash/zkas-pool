@@ -17,7 +17,7 @@ use kaspa_consensus_core::block::Block;
 use kaspa_grpc_client::GrpcClient;
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
-use kaspa_rpc_core::{notify::mode::NotificationMode, GetBlockTemplateRequest};
+use kaspa_rpc_core::{GetBlockTemplateRequest, notify::mode::NotificationMode};
 
 #[tokio::test]
 #[ignore]
@@ -33,18 +33,10 @@ async fn merged_derisk_kaspa_template_carries_commitment() {
 
     // Same client the bridge uses.
     let grpc = if node.starts_with("grpc://") { node.clone() } else { format!("grpc://{node}") };
-    let client = GrpcClient::connect_with_args(
-        NotificationMode::Direct,
-        grpc,
-        None,
-        true,
-        None,
-        false,
-        Some(500_000),
-        Default::default(),
-    )
-    .await
-    .expect("connect to Kaspa node");
+    let client =
+        GrpcClient::connect_with_args(NotificationMode::Direct, grpc, None, true, None, false, Some(500_000), Default::default())
+            .await
+            .expect("connect to Kaspa node");
 
     let pay_addr = Address::try_from(pay.as_str()).expect("valid kaspa: pay address");
 

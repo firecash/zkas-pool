@@ -184,9 +184,10 @@ pub fn spawn_internal_cpu_miner(
                 break;
             }
 
-            match kaspa_api_templates.get_block_template(&mining_address, "internal", "").await {
+            let generation = next_id_templates.fetch_add(1, Ordering::Relaxed);
+            match kaspa_api_templates.get_block_template(&mining_address, "internal", "", 0, generation).await {
                 Ok(block) => {
-                    let id = next_id_templates.fetch_add(1, Ordering::Relaxed);
+                    let id = generation;
                     let header = block.header.clone();
                     let pow_state = Arc::new(kaspa_pow::State::new(&header));
                     work_publisher.publish(Work { id, block, pow_state });

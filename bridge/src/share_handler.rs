@@ -40,13 +40,23 @@ const VAR_DIFF_THREAD_SLEEP: u64 = 10;
 #[allow(dead_code)]
 const WORK_WINDOW: u64 = 80;
 const STATS_PRUNE_INTERVAL: Duration = Duration::from_secs(60);
+const INACTIVE_VARDIFF_TTL: Duration = Duration::from_secs(60 * 60);
 const STATS_PRINT_INTERVAL: Duration = Duration::from_secs(10);
 const BLOCK_CONFIRM_RETRY_DELAY: Duration = Duration::from_secs(2);
 const BLOCK_CONFIRM_MAX_ATTEMPTS: usize = 30;
+/// Narrow compatibility window for ASIC firmware that reports a nearby job
+/// number. Never walk the full 300-slot history: each attempt performs a full
+/// kHeavyHash calculation.
+const MAX_COMPAT_JOB_ATTEMPTS: usize = 8;
 
 // VarDiff tunables
 const VARDIFF_MIN_ELAPSED_SECS: f64 = 30.0;
-const VARDIFF_MAX_ELAPSED_SECS_NO_SHARES: f64 = 90.0;
+// Bootstrap unknown miners from the ASIC-safe 8192 seed toward the slowest
+// supported IceRiver class without making a KS0 wait many minutes for its
+// first measurable share. Seven 15-second halvings reach diff 64 in ~105s.
+const VARDIFF_MAX_ELAPSED_SECS_NO_SHARES: f64 = 15.0;
+const VARDIFF_MAX_ELAPSED_SECS_SPARSE_SHARES: f64 = 90.0;
+const VARDIFF_MIN_DIFF: f64 = 64.0;
 const VARDIFF_MIN_SHARES: f64 = 3.0;
 const VARDIFF_LOWER_RATIO: f64 = 0.75; // below this => decrease diff
 const VARDIFF_UPPER_RATIO: f64 = 1.25; // above this => increase diff
@@ -79,8 +89,8 @@ fn vardiff_compute_next_diff(current: f64, shares: f64, elapsed_secs: f64, expec
 
     if shares == 0.0 && elapsed_secs >= VARDIFF_MAX_ELAPSED_SECS_NO_SHARES {
         let mut next = current * VARDIFF_MAX_STEP_DOWN;
-        if next < 1.0 {
-            next = 1.0;
+        if next < VARDIFF_MIN_DIFF {
+            next = VARDIFF_MIN_DIFF;
         }
         if clamp_pow2 {
             next = vardiff_pow2_clamp_towards(current, next);
@@ -88,7 +98,11 @@ fn vardiff_compute_next_diff(current: f64, shares: f64, elapsed_secs: f64, expec
         return if (next - current).abs() > f64::EPSILON { Some(next) } else { None };
     }
 
-    if elapsed_secs < VARDIFF_MIN_ELAPSED_SECS || shares < VARDIFF_MIN_SHARES {
+    // Prefer at least three samples, but do not strand a slow miner forever
+    // after it happens to find only one or two shares at the bootstrap diff.
+    if elapsed_secs < VARDIFF_MIN_ELAPSED_SECS
+        || (shares < VARDIFF_MIN_SHARES && elapsed_secs < VARDIFF_MAX_ELAPSED_SECS_SPARSE_SHARES)
+    {
         return None;
     }
 
@@ -103,8 +117,8 @@ fn vardiff_compute_next_diff(current: f64, shares: f64, elapsed_secs: f64, expec
 
     let step = ratio.sqrt().clamp(VARDIFF_MAX_STEP_DOWN, VARDIFF_MAX_STEP_UP);
     let mut next = current * step;
-    if next < 1.0 {
-        next = 1.0;
+    if next < VARDIFF_MIN_DIFF {
+        next = VARDIFF_MIN_DIFF;
     }
     if clamp_pow2 {
         next = vardiff_pow2_clamp_towards(current, next);
@@ -156,6 +170,8 @@ pub struct WorkStats {
     pub var_diff_shares_found: Arc<Mutex<i64>>,
     pub var_diff_window: Arc<Mutex<usize>>,
     pub min_diff: Arc<Mutex<f64>>,
+    pub active_connections: Arc<Mutex<u32>>,
+    pub last_session_activity: Arc<Mutex<Instant>>,
 }
 
 impl WorkStats {
@@ -173,8 +189,14 @@ impl WorkStats {
             var_diff_shares_found: Arc::new(Mutex::new(0)),
             var_diff_window: Arc::new(Mutex::new(0)),
             min_diff: Arc::new(Mutex::new(0.0)),
+            active_connections: Arc::new(Mutex::new(0)),
+            last_session_activity: Arc::new(Mutex::new(Instant::now())),
         }
     }
+}
+
+fn should_retain_vardiff_stats(stats: &WorkStats, now: Instant) -> bool {
+    *stats.active_connections.lock() > 0 || now.duration_since(*stats.last_session_activity.lock()) < INACTIVE_VARDIFF_TTL
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -184,6 +206,19 @@ enum DuplicateSubmitOutcome {
     Stale,
     LowDiff,
     Bad,
+}
+
+/// Preserve the independent Kaspa reward before deduplicating the committed
+/// ZKAS block. The ordering is consensus-significant for merged-mining
+/// economics: a late parent may be useless to ZKAS but still valid on Kaspa.
+async fn submit_parent_then_claim_zkas<T: KaspaApiTrait + ?Sized>(
+    kaspa_api: &T,
+    solved_parent: &Block,
+    job_parent: &Block,
+) -> (crate::kaspaapi::MergedParentSubmitOutcome, bool) {
+    let parent_outcome = kaspa_api.submit_merged_parent_if_solved(solved_parent).await;
+    let claimed_zkas = kaspa_api.claim_network_solution(job_parent);
+    (parent_outcome, claimed_zkas)
 }
 
 struct DuplicateSubmitEntry {
@@ -262,10 +297,14 @@ pub struct ShareHandler {
     /// When `Some`, every accepted share, every rejected share, every
     /// block candidate, and every kaspad-accept produces one event.
     event_tx: Option<broadcast::Sender<PoolEvent>>,
+    /// Requests immediate replacement work for a connection after its current
+    /// network-target job has been solved.
+    job_refresh_tx: broadcast::Sender<u64>,
 }
 
 impl ShareHandler {
     pub fn new(instance_id: String) -> Self {
+        let (job_refresh_tx, _) = broadcast::channel(1024);
         Self {
             tip_blue_score: Arc::new(Mutex::new(0)),
             stats: Arc::new(Mutex::new(HashMap::new())),
@@ -273,7 +312,12 @@ impl ShareHandler {
             instance_id,
             duplicate_submit_guard: Arc::new(Mutex::new(DuplicateSubmitGuard::new(Duration::from_secs(180), 50_000))),
             event_tx: None,
+            job_refresh_tx,
         }
+    }
+
+    pub fn subscribe_job_refreshes(&self) -> broadcast::Receiver<u64> {
+        self.job_refresh_tx.subscribe()
     }
 
     /// Attach a broadcast sender that receives one [`PoolEvent`] per
@@ -344,10 +388,14 @@ impl ShareHandler {
         ensure_worker_session_metrics(&worker, Self::workstats_session_start_unix(stats));
     }
 
-    /// Return in-memory stats for a worker when already registered (authorize/submit lifecycle).
+    fn stats_key(ctx: &StratumContext) -> String {
+        let wallet = ctx.wallet_addr.lock().trim().to_ascii_lowercase();
+        format!("{wallet}\0{}", ctx.vardiff_worker_identity())
+    }
+
+    /// Return in-memory stats for a wallet+worker when already registered.
     fn get_stats_if_exists(&self, ctx: &StratumContext) -> Option<WorkStats> {
-        let worker_id = ctx.effective_worker_name();
-        self.stats.lock().get(&worker_id).cloned()
+        self.stats.lock().get(&Self::stats_key(ctx)).cloned()
     }
 
     fn current_stratum_diff(ctx: &StratumContext) -> f64 {
@@ -356,11 +404,12 @@ impl ShareHandler {
 
     pub fn get_create_stats(&self, ctx: &StratumContext) -> WorkStats {
         let worker_id = ctx.effective_worker_name();
+        let stats_key = Self::stats_key(ctx);
 
         let stats = {
             let mut stats_map = self.stats.lock();
 
-            if let Some(stats) = stats_map.get(&worker_id) {
+            if let Some(stats) = stats_map.get(&stats_key) {
                 stats.clone()
             } else {
                 let stats = WorkStats::new(worker_id.clone());
@@ -370,13 +419,59 @@ impl ShareHandler {
                 if seeded_diff > 0.0 {
                     *stats.min_diff.lock() = seeded_diff;
                 }
-                stats_map.insert(worker_id.clone(), stats.clone());
+                stats_map.insert(stats_key, stats.clone());
                 stats
             }
         };
 
         self.sync_worker_prom_session(ctx, &stats);
         stats
+    }
+
+    pub fn activate_client_vardiff(&self, ctx: &StratumContext) {
+        if !ctx.claim_vardiff_registration() {
+            return;
+        }
+        let stats = self.get_create_stats(ctx);
+        let mut active = stats.active_connections.lock();
+        *active = active.saturating_add(1);
+        drop(active);
+        // Offline time is not evidence that the assigned difficulty was too
+        // high. Start a fresh observation window once per connection (this
+        // method is registration-guarded), not from the per-job path.
+        *stats.var_diff_start_time.lock() = Some(Instant::now());
+        *stats.var_diff_shares_found.lock() = 0;
+        *stats.var_diff_window.lock() = 0;
+        *stats.last_session_activity.lock() = Instant::now();
+    }
+
+    pub fn deactivate_client_vardiff(&self, ctx: &StratumContext) {
+        if !ctx.release_vardiff_registration() {
+            return;
+        }
+        if let Some(stats) = self.get_stats_if_exists(ctx) {
+            let mut active = stats.active_connections.lock();
+            *active = active.saturating_sub(1);
+            drop(active);
+            *stats.last_session_activity.lock() = Instant::now();
+        }
+    }
+
+    /// Initialize a connection from a safe cached difficulty, or from its
+    /// configured seed when this wallet+worker has no prior vardiff state.
+    pub fn register_client_vardiff(&self, ctx: &StratumContext, seed: f64) -> f64 {
+        let stats = self.get_create_stats(ctx);
+        let mut current = stats.min_diff.lock();
+        if !current.is_finite() || *current < VARDIFF_MIN_DIFF {
+            *current = seed.max(VARDIFF_MIN_DIFF);
+        }
+        let restored = *current;
+        drop(current);
+        if stats.var_diff_start_time.lock().is_none() {
+            *stats.var_diff_start_time.lock() = Some(Instant::now());
+        }
+        *stats.last_session_activity.lock() = Instant::now();
+        restored
     }
 
     pub async fn handle_submit(
@@ -626,6 +721,7 @@ impl ShareHandler {
         let mut pow_passed;
         let mut pow_value;
         let max_jobs = state.max_jobs() as u64;
+        let mut compat_job_attempts = 0usize;
 
         debug!("[SUBMIT] Starting PoW validation for job_id: {} (max_jobs: {})", current_job_id, max_jobs);
 
@@ -797,6 +893,39 @@ impl ShareHandler {
                 let worker_name = ctx.effective_worker_name();
                 let prefix = self.log_prefix();
 
+                // Materialize the solved parent before either settlement leg.
+                // Kaspa-parent submission is deliberately independent of the
+                // ZKAS H_fc claim: a later parent nonce can still earn KAS even
+                // when an earlier nonce already minted the committed ZKAS block.
+                let header_bits = header_clone.bits;
+                let header_version = header_clone.version;
+                let original_timestamp = header_clone.timestamp;
+                header_clone.nonce = nonce_val;
+                let transactions_vec = current_job.block.transactions.iter().cloned().collect();
+                let block = Block::from_arcs(Arc::new(header_clone), Arc::new(transactions_vec));
+
+                let (parent_outcome, claimed_zkas) =
+                    submit_parent_then_claim_zkas(kaspa_api.as_ref(), &block, &current_job.block).await;
+                crate::prom::record_merged_parent_submit(
+                    &self.worker_prom_context(&ctx, ""),
+                    &parent_outcome,
+                    claimed_zkas,
+                );
+
+                // In merged mode many distinct parent nonces can prove the same
+                // fixed ZKAS `H_fc`, but that ZKAS block can pay only once.
+                // Claim only the ZKAS leg, after preserving any Kaspa reward.
+                if !claimed_zkas {
+                    debug!(
+                        "{} duplicate ZKAS network-target solution for already-solved job {} \
+                         (Kaspa parent handled independently; share credited)",
+                        prefix, current_job_id
+                    );
+                    invalid_share = false;
+                    break;
+                }
+                let _ = self.job_refresh_tx.send(ctx.session_uid());
+
                 info!(
                     "{} {} {}",
                     prefix,
@@ -811,17 +940,6 @@ impl ShareHandler {
                     format!("pow_value ({:x}) <= network_target ({:x})", pow_value, network_target)
                 );
                 debug!("{} {} {} {}", prefix, LogColors::block("[BLOCK]"), LogColors::label("Pow Value:"), format!("{:x}", pow_value));
-
-                // Log block details before creating the block (to avoid borrow issues)
-                let header_bits = header_clone.bits;
-                let header_version = header_clone.version;
-                let original_timestamp = header_clone.timestamp;
-
-                // Block found - submit it
-                // Only set the nonce - keep all other header fields from the real block template
-                // The header comes directly from the Kaspa node via get_block_template_call()
-                // We preserve: version, bits, timestamp, all hash fields, parents, scores, etc.
-                header_clone.nonce = nonce_val;
 
                 // Verify timestamp is still valid (not too old)
                 // Kaspa typically accepts blocks with timestamps within a reasonable window
@@ -878,9 +996,6 @@ impl ShareHandler {
                     ctx.disconnect();
                 }
 
-                // Create new block with updated header
-                let transactions_vec = current_job.block.transactions.iter().cloned().collect();
-                let block = Block::from_arcs(Arc::new(header_clone), Arc::new(transactions_vec));
                 let blue_score = block.header.blue_score;
 
                 // Calculate block hash immediately after block creation
@@ -1157,7 +1272,8 @@ impl ShareHandler {
             }
 
             // Check pool difficulty
-            let pool_target = state.stratum_diff().map(|d| d.target_value.clone()).unwrap_or_else(BigUint::zero);
+            let job_diff = state.get_job_diff(current_job_id).or_else(|| state.stratum_diff());
+            let pool_target = job_diff.as_ref().map(|d| d.target_value.clone()).unwrap_or_else(BigUint::zero);
 
             // Compare FULL pow_value against pool_target (not just lower bits)
             // Compare full 256-bit values
@@ -1179,7 +1295,7 @@ impl ShareHandler {
                     pow_len,
                     pool_target,
                     target_len,
-                    state.stratum_diff().map(|d| d.diff_value),
+                    job_diff.as_ref().map(|d| d.diff_value),
                     pow_value <= pool_target
                 );
                 debug!(
@@ -1191,7 +1307,7 @@ impl ShareHandler {
             // Check pool difficulty (stratum target)
             // If pow_value >= pool_target, share doesn't meet pool difficulty
             // Higher hash value means worse share
-            if pow_value >= pool_target {
+            if pow_value > pool_target {
                 // Share doesn't meet pool difficulty - might be wrong job ID (moved to debug to keep terminal clean)
                 let worker_name = ctx.worker_name.lock().clone();
                 debug!(
@@ -1216,6 +1332,11 @@ impl ShareHandler {
                     debug!("Job ID loop exhausted: current_job_id={}, job_id={}, max_jobs={}", current_job_id, job_id, max_jobs);
                     break;
                 } else {
+                    compat_job_attempts += 1;
+                    if compat_job_attempts >= MAX_COMPAT_JOB_ATTEMPTS {
+                        debug!("Job compatibility window exhausted after {} attempts (submitted job {})", compat_job_attempts, job_id);
+                        break;
+                    }
                     // Try previous job ID
                     let prev_job_id = current_job_id - 1;
                     if let Some(prev_job) = state.get_job(prev_job_id) {
@@ -1290,7 +1411,8 @@ impl ShareHandler {
         *stats.var_diff_shares_found.lock() += 1;
 
         // Get hashValue from stratum_diff
-        let hash_value = state.stratum_diff().map(|d| d.hash_value).unwrap_or(0.0);
+        let credited_job_diff = state.get_job_diff(current_job_id).or_else(|| state.stratum_diff());
+        let hash_value = credited_job_diff.as_ref().map_or(0.0, |d| d.hash_value);
 
         // Accumulate hashValue for hashrate calculation
         *stats.shares_diff.lock() += hash_value;
@@ -1306,13 +1428,7 @@ impl ShareHandler {
         // difficulty here (the value the stratum layer set on the
         // job), not the share's hash_value — accounting downstream
         // multiplies by difficulty to get PROP weight.
-        let assigned_diff = {
-            let s = self.get_create_stats(&ctx);
-            let v = *s.min_diff.lock();
-            // Fall back to hash_value if vardiff hasn't initialised
-            // (set_client_vardiff not yet called for this worker).
-            if v > 0.0 { v } else { hash_value }
-        };
+        let assigned_diff = credited_job_diff.as_ref().map_or(hash_value, |d| d.diff_value);
         let job_daa_score = current_job.block.header.daa_score;
         if let (Ok(wallet_d), Ok(worker_d), Ok(difficulty_d)) =
             (WalletAddress::new(wallet_addr.clone()), WorkerName::new(worker_name.clone()), ShareDifficulty::new(assigned_diff))
@@ -1405,24 +1521,14 @@ impl ShareHandler {
                         _ = interval.tick() => {
                             let mut stats_map = stats.lock();
                             let now = Instant::now();
-                            stats_map.retain(|_, v| {
-                                let last_share = *v.last_share.lock();
-                                let shares = *v.shares_found.lock();
-                                (shares > 0 || now.duration_since(v.start_time) < Duration::from_secs(180))
-                                    && now.duration_since(last_share) < Duration::from_secs(600)
-                            });
+                            stats_map.retain(|_, v| should_retain_vardiff_stats(v, now));
                         }
                     }
                 } else {
                     interval.tick().await;
                     let mut stats_map = stats.lock();
                     let now = Instant::now();
-                    stats_map.retain(|_, v| {
-                        let last_share = *v.last_share.lock();
-                        let shares = *v.shares_found.lock();
-                        (shares > 0 || now.duration_since(v.start_time) < Duration::from_secs(180))
-                            && now.duration_since(last_share) < Duration::from_secs(600)
-                    });
+                    stats_map.retain(|_, v| should_retain_vardiff_stats(v, now));
                 }
             }
         });
@@ -1841,6 +1947,11 @@ impl ShareHandler {
                 let now = Instant::now();
 
                 for (_worker_id, v) in stats_map.iter_mut() {
+                    // Never lower cached difficulty while the worker is
+                    // disconnected; only live sessions can provide evidence.
+                    if *v.active_connections.lock() == 0 {
+                        continue;
+                    }
                     let start_opt = *v.var_diff_start_time.lock();
                     let Some(start) = start_opt else { continue };
 
@@ -1886,12 +1997,24 @@ pub trait KaspaApiTrait: Send + Sync {
         wallet_addr: &str,
         remote_app: &str,
         canxium_addr: &str,
+        session_uid: u64,
+        generation: u64,
     ) -> Result<Block, Box<dyn std::error::Error + Send + Sync>>;
 
     async fn submit_block(
         &self,
         block: Block,
     ) -> Result<crate::kaspaapi::BlockSubmitOutcome, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Submit the independent Kaspa-parent leg before attempting to claim the
+    /// committed ZKAS block. The default keeps non-merged mocks and adapters
+    /// source-compatible.
+    async fn submit_merged_parent_if_solved(
+        &self,
+        _parent: &Block,
+    ) -> crate::kaspaapi::MergedParentSubmitOutcome {
+        crate::kaspaapi::MergedParentSubmitOutcome::NotMerged
+    }
 
     /// Get balances by addresses (for Prometheus metrics)
     /// Get balances for addresses
@@ -1918,6 +2041,91 @@ pub trait KaspaApiTrait: Send + Sync {
     fn merged_chain_hash(&self, _parent_block: &Block) -> Option<kaspa_hashes::Hash> {
         None
     }
+
+    /// Atomically claim a network-target solution. In merged mode this is
+    /// keyed by `H_fc`; the first caller returns true and later AuxPoW proofs
+    /// for the same ZKAS block return false.
+    fn claim_network_solution(&self, _job_block: &Block) -> bool {
+        true
+    }
+
+    async fn refresh_merged_parent(&self, _current_parent: &Block) -> Result<Option<Block>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod merged_settlement_order_tests {
+    use super::{KaspaApiTrait, submit_parent_then_claim_zkas};
+    use crate::kaspaapi::{BlockSubmitOutcome, MergedParentSubmitOutcome};
+    use kaspa_consensus_core::{block::Block, header::Header};
+    use kaspa_hashes::Hash;
+    use parking_lot::Mutex;
+
+    struct AlreadyClaimedApi {
+        calls: Mutex<Vec<&'static str>>,
+    }
+
+    #[async_trait::async_trait]
+    impl KaspaApiTrait for AlreadyClaimedApi {
+        async fn get_block_template(
+            &self,
+            _wallet_addr: &str,
+            _remote_app: &str,
+            _canxium_addr: &str,
+            _session_uid: u64,
+            _generation: u64,
+        ) -> Result<Block, Box<dyn std::error::Error + Send + Sync>> {
+            unreachable!("template fetch is outside this regression")
+        }
+
+        async fn submit_block(
+            &self,
+            _block: Block,
+        ) -> Result<BlockSubmitOutcome, Box<dyn std::error::Error + Send + Sync>> {
+            unreachable!("ZKAS submission must not run after a failed claim")
+        }
+
+        async fn submit_merged_parent_if_solved(&self, _parent: &Block) -> MergedParentSubmitOutcome {
+            self.calls.lock().push("parent");
+            MergedParentSubmitOutcome::Accepted
+        }
+
+        fn claim_network_solution(&self, _job_block: &Block) -> bool {
+            self.calls.lock().push("claim");
+            false
+        }
+
+        async fn get_balances_by_addresses(
+            &self,
+            _addresses: &[String],
+        ) -> Result<Vec<(String, u64)>, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(vec![])
+        }
+
+        async fn get_current_block_color(
+            &self,
+            _block_hash: &str,
+        ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(false)
+        }
+    }
+
+    #[tokio::test]
+    async fn late_kaspa_parent_is_submitted_before_failed_zkas_claim() {
+        let parent = Block::new(Header::from_precomputed_hash(Hash::from_bytes([7; 32]), vec![]), vec![]);
+        let api = AlreadyClaimedApi { calls: Mutex::new(vec![]) };
+
+        let (outcome, claimed_zkas) = submit_parent_then_claim_zkas(&api, &parent, &parent).await;
+
+        assert_eq!(outcome, MergedParentSubmitOutcome::Accepted);
+        assert!(!claimed_zkas, "fixture represents an H_fc already claimed by an earlier nonce");
+        assert_eq!(
+            api.calls.lock().as_slice(),
+            ["parent", "claim"],
+            "Kaspa submission must never be gated behind ZKAS deduplication"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1941,12 +2149,16 @@ mod retention_tests {
         })
     }
 
+    fn identify(ctx: &StratumContext, wallet: &str, worker: &str) {
+        *ctx.wallet_addr.lock() = wallet.to_string();
+        ctx.set_authorized_worker_name(worker.to_string());
+    }
+
     #[test]
     fn set_client_vardiff_does_not_recreate_pruned_stats() {
         let handler = ShareHandler::new("test-instance".to_string());
         let ctx = test_ctx();
-        *ctx.worker_name.lock() = "ghost".to_string();
-        *ctx.wallet_addr.lock() = "kaspatest:ghost".to_string();
+        identify(&ctx, "kaspatest:ghost", "ghost");
 
         handler.get_create_stats(&ctx);
         assert_eq!(handler.stats.lock().len(), 1);
@@ -1960,6 +2172,79 @@ mod retention_tests {
 
         handler.get_create_stats(&ctx);
         assert_eq!(handler.stats.lock().len(), 1, "authorize/submit lifecycle may recreate stats");
+    }
+
+    #[test]
+    fn reconnect_restores_wallet_worker_difficulty() {
+        let handler = ShareHandler::new("test-instance".to_string());
+        let first = test_ctx();
+        identify(&first, "kaspatest:wallet-a", "rig");
+        handler.activate_client_vardiff(&first);
+        assert_eq!(handler.register_client_vardiff(&first, 8192.0), 8192.0);
+        handler.set_client_vardiff(&first, 256.0);
+        handler.deactivate_client_vardiff(&first);
+
+        let reconnect = test_ctx();
+        identify(&reconnect, "kaspatest:wallet-a", "rig");
+        handler.activate_client_vardiff(&reconnect);
+        assert_eq!(handler.register_client_vardiff(&reconnect, 8192.0), 256.0);
+    }
+
+    #[test]
+    fn same_worker_name_on_another_wallet_has_independent_vardiff() {
+        let handler = ShareHandler::new("test-instance".to_string());
+        let wallet_a = test_ctx();
+        identify(&wallet_a, "kaspatest:wallet-a", "rig");
+        handler.activate_client_vardiff(&wallet_a);
+        handler.register_client_vardiff(&wallet_a, 8192.0);
+        handler.set_client_vardiff(&wallet_a, 256.0);
+
+        let wallet_b = test_ctx();
+        identify(&wallet_b, "kaspatest:wallet-b", "rig");
+        handler.activate_client_vardiff(&wallet_b);
+        assert_eq!(handler.register_client_vardiff(&wallet_b, 8192.0), 8192.0);
+        assert_eq!(handler.stats.lock().len(), 2);
+    }
+
+    #[test]
+    fn generated_display_worker_does_not_break_reconnect_restore() {
+        let handler = ShareHandler::new("test-instance".to_string());
+        let first = test_ctx();
+        first.set_id(1);
+        identify(&first, "kaspatest:wallet-a", "");
+        handler.activate_client_vardiff(&first);
+        handler.register_client_vardiff(&first, 8192.0);
+        handler.set_client_vardiff(&first, 128.0);
+        handler.deactivate_client_vardiff(&first);
+
+        let reconnect = test_ctx();
+        reconnect.set_id(2);
+        identify(&reconnect, "kaspatest:wallet-a", "");
+        assert_ne!(first.effective_worker_name(), reconnect.effective_worker_name());
+        handler.activate_client_vardiff(&reconnect);
+        assert_eq!(handler.register_client_vardiff(&reconnect, 8192.0), 128.0);
+    }
+
+    #[test]
+    fn active_stats_survive_ttl_and_inactive_stats_expire() {
+        let stats = WorkStats::new("rig".to_string());
+        let now = Instant::now();
+        *stats.last_session_activity.lock() = now - INACTIVE_VARDIFF_TTL - Duration::from_secs(1);
+
+        *stats.active_connections.lock() = 1;
+        assert!(should_retain_vardiff_stats(&stats, now));
+
+        *stats.active_connections.lock() = 0;
+        assert!(!should_retain_vardiff_stats(&stats, now));
+    }
+
+    #[test]
+    fn zero_share_bootstrap_descends_quickly_but_stops_at_ks0_floor() {
+        assert_eq!(vardiff_compute_next_diff(8192.0, 0.0, 15.0, 20.0, true), Some(4096.0));
+        assert_eq!(vardiff_compute_next_diff(128.0, 0.0, 15.0, 20.0, true), Some(64.0));
+        assert_eq!(vardiff_compute_next_diff(64.0, 0.0, 15.0, 20.0, true), None);
+        assert_eq!(vardiff_compute_next_diff(8192.0, 1.0, 89.0, 20.0, true), None);
+        assert_eq!(vardiff_compute_next_diff(8192.0, 1.0, 90.0, 20.0, true), Some(4096.0));
     }
 }
 
