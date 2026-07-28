@@ -19,6 +19,67 @@ custodial mode requires a **shielded treasury** with automatic shielded payouts
 > the upstream fork; they are not renamed to avoid churning 60+ patched `kaspa-*` deps.
 > The product is ZKas; the binary you build is `katpool`.
 
+## The chain
+
+| | |
+|---|---|
+| Ticker / base unit | `$zkas` — 1 $zkas = 100,000,000 sompi |
+| Consensus | rusty-kaspa fork (kaspad v2.0.1 lineage), GHOSTDAG BlockDAG |
+| Proof of Work | kHeavyHash, **byte-identical to Kaspa mainnet** |
+| Block rate | **1 BPS** (1000 ms target) |
+| Privacy | shielded-by-default — value lives in an Orchard (Halo 2) pool; the coinbase reward is minted directly as a shielded note |
+| Merged mining | with Kaspa via AuxPoW; **active from genesis** on the live network, and optional — native mining is always valid |
+| Address HRP | `zkas:` (testnet `zkastest:`, devnet `zkasdev:`, simnet `zkassim:`) |
+| Network id | `zkas-mainnet` |
+| Default node ports | gRPC **16810**, P2P **16811** (so a ZKas node co-exists with a Kaspa node) |
+| Coinbase maturity | 100 blocks (~100 s); a shielded note becomes spendable after 600 blocks (~10 min) |
+
+**Emission.** 60 $zkas per block at launch, **halving every 3 months**. A
+consensus-enforced **5% dev fee** is appended as one extra coinbase output, so the
+finding miner receives **57 $zkas** of the initial 60 — the fee is skimmed from the
+subsidy, never from transaction fees. Once the curve decays below the floor (around
+month 10) a perpetual **tail** takes over: 6 $zkas/s until month 24, then **0.6 $zkas/s
+forever** (~18.9M $zkas/year).
+
+**Supply.** ZKas has **no fixed maximum supply** — the tail is perpetual by design, so
+miner security is funded forever rather than by fees alone. The deflationary curve
+itself is bounded at ~703M $zkas. Total supply on the live schedule:
+
+| after | supply |
+|---|---|
+| 1 year | ~665M $zkas |
+| 2 years | ~854M |
+| 5 years | ~911M |
+| 10 years | ~1.005B |
+| 20 years | ~1.195B |
+
+Long-run inflation is ~2.2% at tail onset (~year 2), decaying toward ~1% and below over
+decades. Emission is heavily front-loaded: roughly half of all curve issuance happens in
+the first quarter.
+
+## Integrating ZKas into your own pool software
+
+You do **not** need this codebase to run a ZKas pool. Because the PoW is byte-identical
+to Kaspa, your stratum layer, share validation, vardiff and difficulty maths need no
+changes at all — an unmodified Kaspa ASIC hashes ZKas headers correctly.
+
+Exactly **three** things are mandatory, and [`help.txt`](help.txt) walks each one to the
+exact file and symbol in the [node source](https://github.com/firecash/zkas-rusty):
+
+1. **The payout address is a shielded (Orchard) address, version 9.** The coinbase output
+   script is a raw 43-byte address and is *not* a standard script class — drop any check
+   that a coinbase output "looks like P2PK/P2SH".
+2. **The coinbase carries a mandatory dev-fee output.** Submit the node's template
+   coinbase verbatim. If you cache templates and rewrite `outputs.last()`, you rewrite
+   the *dev fee* and lose the block — this is the single most expensive integration bug
+   (see help.txt §3).
+3. **The coinbase payload has an extra 32-byte field** (the shielded state root, between
+   `subsidy` and the script-pubkey block). Any pool that writes its extranonce at a
+   hardcoded offset corrupts the payload on ZKas.
+
+Merged mining and custodial shielded payouts are optional; both are specified end to end
+in [`help.txt`](help.txt) §4 and §6.
+
 ## Status
 
 > **Live today: direct (solo-style) payout.** The stratum **bridge** connects to a ZKas
@@ -68,7 +129,8 @@ stratum+tcp://<pool-host>:<port>   user=zkas:<your-address>   pass=x
 ```
 
 (The password field is unused; `x` or empty is fine.) See [`help.txt`](help.txt) for the
-full operator guide, native vs. AuxPoW merged mining, and node setup.
+full integration guide: node setup, native vs. AuxPoW merged mining, the
+exact consensus files to read, and an error-message-to-cause table.
 
 ## Quick start (development)
 
@@ -77,12 +139,12 @@ Prerequisites: Rust 1.91+ / edition 2024 (pinned via `rust-version` in
 `cargo-deny` / `cargo-audit`.
 
 The patched `kaspa-*` / ZKas crates are pulled straight from the
-[`firecash-rusty`](https://github.com/firecash/zkas-rusty) fork over git — you do
+[`zkas-rusty`](https://github.com/firecash/zkas-rusty) fork over git — you do
 **not** need a local rusty-kaspa checkout at any particular path (Cargo fetches and pins it).
 
 ```bash
 git clone https://github.com/firecash/zkas-pool.git
-cd firecash-pool
+cd zkas-pool
 
 # Verify your environment matches CI gates
 cargo fmt --all --check
@@ -95,8 +157,8 @@ cargo run --release --bin katpool
 ```
 
 You also need a reachable ZKas node (`kaspad`) with `--utxoindex`. See
-[`help.txt`](help.txt) §3 for node setup and the stratum bridge config
-([`firecash-bridge.yaml`](firecash-bridge.yaml)).
+[`help.txt`](help.txt) §2 for node setup and the stratum bridge config
+([`zkas-bridge.yaml`](zkas-bridge.yaml)).
 
 ## Operating principles
 
