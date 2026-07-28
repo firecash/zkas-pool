@@ -1,0 +1,11 @@
+[Unit]
+Description=Run ZKAS pool statistics API health check
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=30
+AccuracySec=5
+Unit=zkas-pool-redactor-watchdog.service
+
+[Install]
+WantedBy=timers.target

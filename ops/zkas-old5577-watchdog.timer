@@ -1,0 +1,11 @@
+[Unit]
+Description=Run isolated VPS3 pool health check
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=30
+AccuracySec=5
+Unit=zkas-old5577-watchdog.service
+
+[Install]
+WantedBy=timers.target

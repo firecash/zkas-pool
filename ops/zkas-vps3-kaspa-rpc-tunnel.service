@@ -1,0 +1,13 @@
+[Unit]
+Description=Kaspa RPC tunnel for isolated VPS3 merged-mining pool
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ssh -NT -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -R 127.0.0.1:16215:127.0.0.1:16215 root@204.10.194.28
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

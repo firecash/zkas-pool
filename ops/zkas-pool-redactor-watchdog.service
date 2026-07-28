@@ -1,0 +1,7 @@
+[Unit]
+Description=Health check for ZKAS public pool statistics API
+After=firecash-pool-redactor.service
+
+[Service]
+Type=oneshot
+ExecStart=/root/work/zkas-pool/ops/zkas-pool-redactor-watchdog.sh

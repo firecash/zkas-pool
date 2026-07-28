@@ -1,0 +1,18 @@
+[Unit]
+Description=ZKas old Stratum compatibility bridge on VPS2 port 5577
+After=network-online.target firecash-node.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/zkas-old5577-vps2
+Environment=RUST_LOG=info
+Environment=BRIDGE_ALLOW_UNSYNCED=1
+Environment=ZKAS_MERGED_MINING=1
+ExecStart=/opt/zkas-old5577-vps2/stratum-bridge --node-mode external --config /opt/zkas-old5577-vps2/config.yaml
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

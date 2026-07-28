@@ -74,3 +74,28 @@ __pycache__/
 
 # Redactor runtime state
 redactor-payout-history.json
+
+# Local operational snapshots (large zips / pre-change copies) — never committed
+backups/
+deploy-backups/
+*.bak
+*.bak.*
+
+# Local operational snapshots (large zips / pre-change copies) — never committed
+backups/
+deploy-backups/
+*.bak
+*.bak.*
+
+# Local incident notes and audits: they quote live miner IPs and per-worker
+# behaviour, which are third-party data and must not be published.
+pool27.txt
+pool-problems-and-fixes.txt
+docs/BRIDGE-3DAY-BUILD.md
+docs/BRIDGE-BUILD-LOG.md
+docs/BRIDGE-COMPLETION.md
+docs/BRIDGE-FINAL-ARCH.md
+docs/KASPA-MINER-COMPATIBILITY-AUDIT-2026-07-25.md
+docs/KASPA-POOL-COMPATIBILITY-RESEARCH-2026-07-25.md
+docs/POOL-EFFICIENCY-AUDIT-2026-07-25.md
+docs/SOLO-POOL-MINIMAL-FIX-PLAN-2026-07-25.md

@@ -1,0 +1,6 @@
+[Unit]
+Description=Health check for isolated VPS3 ZKAS/Kaspa pool
+
+[Service]
+Type=oneshot
+ExecStart=/opt/zkas-old5577/watchdog.sh

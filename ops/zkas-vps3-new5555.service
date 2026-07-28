@@ -1,0 +1,18 @@
+[Unit]
+Description=ZKas new stratum bridge on VPS3 port 5555
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/zkas-new5555
+Environment=RUST_LOG=info
+Environment=BRIDGE_ALLOW_UNSYNCED=1
+Environment=ZKAS_MERGED_MINING=1
+ExecStart=/opt/zkas-new5555/stratum-bridge --node-mode external --config /opt/zkas-new5555/config.yaml
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,21 @@
+kaspad_address: "127.0.0.1:16110"
+block_wait_time: 500
+print_stats: true
+log_to_file: false
+health_check_port: ""
+web_dashboard_port: ":3037"
+var_diff: false
+shares_per_min: 20
+var_diff_stats: false
+pow2_clamp: true
+extranonce_size: 2
+coinbase_tag_suffix: "zkas-old5577-vps2"
+
+instances:
+  - stratum_port: ":5577"
+    min_share_diff: 8192
+    prom_port: ":2128"
+    var_diff: false
+    shares_per_min: 20
+    kaspa_common_protocol: true
+    log_to_file: false
