@@ -118,7 +118,7 @@
       <table style="margin-top:8px"><thead><tr><th>When</th><th>Worker</th><th>Amount</th><th>Block</th></tr></thead>
         <tbody id="mPayouts"></tbody></table>
       <div class="hint" style="margin-top:12px">
-        Each block pays the miner <b>57 $zkas</b> after the 5% development allocation, straight to your shielded address. <b>Confirmed</b> = final; <b>waiting</b> = still maturing (~10 min). The pool can't see your shielded balance — check it in your <a href="https://wallet.zkas.info">wallet</a>.
+        Each block pays the current miner share (95% of the live gross subsidy) straight to your shielded address. <b>Confirmed</b> = final; <b>waiting</b> = still maturing (~10 min). The pool can't see your shielded balance — check it in your <a href="https://wallet.zkas.info">wallet</a>.
       </div>
     </div>
     <div id="minerEmpty" class="hint" style="margin-top:12px;display:none">No miner found for that address yet — check it's correct and that your rig is connected.</div>
@@ -135,7 +135,7 @@
       <div class="stat"><div class="v" id="stHeight">–</div><div class="l">Block height</div></div>
       <div class="stat"><div class="v" id="stNet">–</div><div class="l">Network hashrate</div></div>
       <div class="stat"><div class="v">0%</div><div class="l">Pool fee</div></div>
-      <div class="stat"><div class="v">57 $zkas</div><div class="l">Miner reward</div></div>
+      <div class="stat"><div class="v" id="poolReward">–</div><div class="l">Current miner reward</div></div>
     </div>
   </div>
 
@@ -177,6 +177,16 @@
   function shortHash(h){ if(!h)return '—'; return h.length>20? h.slice(0,12)+'…'+h.slice(-6):h; }
   function ago(ts){ if(!ts)return '—'; const s=Math.max(0,(Date.now()-(ts>1e12?ts:ts*1000))/1000);
     if(s<60)return Math.floor(s)+'s ago'; if(s<3600)return Math.floor(s/60)+'m ago'; return Math.floor(s/3600)+'h ago'; }
+
+  async function refreshReward(){
+    try{
+      const response = await fetch('https://explorer.zkas.info/api/info/blockreward',{cache:'no-store'});
+      if(!response.ok) throw new Error('reward '+response.status);
+      const gross = Number((await response.json()).blockreward);
+      if(!Number.isFinite(gross)) throw new Error('invalid reward');
+      $('poolReward').textContent = (gross * .95).toLocaleString(undefined,{maximumFractionDigits:2})+' $zkas';
+    }catch{ $('poolReward').textContent='—'; }
+  }
 
   let refreshTimer = null;
   async function refresh(){
@@ -229,6 +239,8 @@
     }
   }
   refresh();
+  refreshReward();
+  setInterval(refreshReward,60000);
   document.addEventListener('visibilitychange',()=>{ if(!document.hidden) refresh(); });
   window.addEventListener('focus',refresh);
 
@@ -255,9 +267,9 @@
       $('mPayouts').innerHTML  = (m.payouts||[]).map(p=>`<tr>
         <td>${new Date((p.ts||0)*1000).toLocaleString()}</td>
         <td>${p.worker||'—'}</td>
-        <td>${(p.amountFc||60).toLocaleString()} $zkas</td>
+        <td>${p.amountFc == null ? '—' : Number(p.amountFc).toLocaleString()} $zkas</td>
         <td class="mono" style="font-size:.85em">${(p.hash||'').slice(0,10)}…${(p.hash||'').slice(-6)}</td></tr>`).join('')
-        || '<tr><td colspan="4" class="empty">No payouts recorded yet — history starts collecting from now (each confirmed block = 57 $zkas paid directly to your address after the 5% development allocation).</td></tr>';
+        || '<tr><td colspan="4" class="empty">No payouts recorded yet — history starts collecting from now. Each payout uses the live miner share.</td></tr>';
     }catch{ $('minerEmpty').style.display='block'; $('minerResult').style.display='none'; }
   }
   $('lookupBtn').addEventListener('click',lookup);
