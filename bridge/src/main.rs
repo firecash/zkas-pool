@@ -152,6 +152,12 @@ fn log_bridge_configuration(config: &BridgeConfig) {
     tracing::info!("----------------------------------");
     tracing::info!("initializing bridge ({} instance{})", instance_count, if instance_count > 1 { "s" } else { "" });
     tracing::info!("\tkaspad:          {} (shared)", config.global.kaspad_address);
+    if !config.global.merged_kaspa_address.is_empty() {
+        tracing::info!("\tKaspa parent:    {}", config.global.merged_kaspa_address);
+        tracing::info!("\tKaspa payout:    configured");
+    } else {
+        tracing::info!("\tKaspa parent:    disabled (ZKas-only)");
+    }
     tracing::info!("\tblock wait:      {:?}", config.global.block_wait_time);
     tracing::info!("\tprint stats:     {}", config.global.print_stats);
     tracing::info!("\tvar diff:        {}", config.global.var_diff);
@@ -285,10 +291,19 @@ async fn main() -> Result<(), anyhow::Error> {
     // template pays the pool, regardless of which miner authorized). The
     // standalone bridge binary preserves upstream solo / MM-pool parity by
     // passing `None` — only the unified `katpool` runtime opts in via env config.
-    let kaspa_api =
-        KaspaApi::new(config.global.kaspad_address.clone(), config.global.coinbase_tag_suffix.clone(), shutdown_rx.clone(), None)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create Kaspa API client: {}", e))?;
+    let merged_node = (!config.global.merged_kaspa_address.trim().is_empty()).then(|| config.global.merged_kaspa_address.clone());
+    let merged_pay =
+        (!config.global.merged_kaspa_pay_address.trim().is_empty()).then(|| config.global.merged_kaspa_pay_address.clone());
+    let kaspa_api = KaspaApi::new_with_merged(
+        config.global.kaspad_address.clone(),
+        config.global.coinbase_tag_suffix.clone(),
+        shutdown_rx.clone(),
+        None,
+        merged_node,
+        merged_pay,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to create Kaspa API client: {}", e))?;
 
     if !config.global.web_dashboard_port.is_empty() {
         let web_dashboard_port = config.global.web_dashboard_port.clone();

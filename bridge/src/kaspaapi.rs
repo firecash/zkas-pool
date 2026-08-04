@@ -212,6 +212,7 @@ pub static NODE_STATUS: Lazy<Mutex<NodeStatusSnapshot>> = Lazy::new(|| Mutex::ne
 /// Both use gRPC under the hood, but through an RPC client wrapper abstraction
 pub struct KaspaApi {
     client: Arc<GrpcClient>,
+    zkas_node_endpoint: String,
     notification_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<Notification>>>>,
     /// Independent template stream from the real Kaspa parent node. ZKAS is
     /// 1 BPS, while Kaspa parent work changes at roughly 10 BPS.
@@ -271,8 +272,23 @@ impl KaspaApi {
     pub async fn new(
         address: String,
         coinbase_tag_suffix: Option<String>,
+        shutdown_rx: watch::Receiver<bool>,
+        coinbase_address_override: Option<Address>,
+    ) -> Result<Arc<Self>> {
+        Self::new_with_merged(address, coinbase_tag_suffix, shutdown_rx, coinbase_address_override, None, None).await
+    }
+
+    /// Create a node client with optional real dual-chain merged mining.
+    ///
+    /// The standalone bridge supplies these values from `config.yaml`. Environment
+    /// variables remain supported and take precedence for existing deployments.
+    pub async fn new_with_merged(
+        address: String,
+        coinbase_tag_suffix: Option<String>,
         mut shutdown_rx: watch::Receiver<bool>,
         coinbase_address_override: Option<Address>,
+        configured_kaspa_node: Option<String>,
+        configured_kaspa_pay: Option<String>,
     ) -> Result<Arc<Self>> {
         info!("Connecting to Kaspa node at {}", address);
 
@@ -397,10 +413,18 @@ impl KaspaApi {
         if let Some(addr) = &coinbase_address_override {
             info!("Coinbase recipient override active: every block template will pay {}", addr);
         }
+        let configured_kaspa_node = configured_kaspa_node.unwrap_or_default();
+        let configured_kaspa_pay = configured_kaspa_pay.unwrap_or_default();
+        let node = std::env::var("ZKAS_KASPA_NODE")
+            .or_else(|_| std::env::var("FIRECASH_KASPA_NODE"))
+            .unwrap_or(configured_kaspa_node);
+        let pay = std::env::var("ZKAS_KASPA_PAY")
+            .or_else(|_| std::env::var("FIRECASH_KASPA_PAY"))
+            .unwrap_or(configured_kaspa_pay);
         let merged_mining = std::env::var("ZKAS_MERGED_MINING")
             .or_else(|_| std::env::var("FIRECASH_MERGED_MINING"))
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+            .unwrap_or_else(|_| !node.trim().is_empty() && !pay.trim().is_empty());
         if merged_mining {
             info!(
                 "Merged-mining (AuxPoW) mode ENABLED: ASICs hash a parent committing to the ZKas block; solved parents are submitted as ZKas aux blocks"
@@ -412,8 +436,6 @@ impl KaspaApi {
         // (harder) Kaspa target. Best-effort: if unset or unreachable, merged mining
         // degrades to ZKas-aux-only rather than failing to start.
         let (kaspa_client, kaspa_pay) = if merged_mining {
-            let node = std::env::var("ZKAS_KASPA_NODE").or_else(|_| std::env::var("FIRECASH_KASPA_NODE")).unwrap_or_default();
-            let pay = std::env::var("ZKAS_KASPA_PAY").or_else(|_| std::env::var("FIRECASH_KASPA_PAY")).unwrap_or_default();
             if node.is_empty() || pay.is_empty() {
                 info!("Real merged mining disabled (set ZKAS_KASPA_NODE + ZKAS_KASPA_PAY to also earn KAS); running ZKas-aux-only");
                 (None, None)
@@ -475,6 +497,7 @@ impl KaspaApi {
 
         let api = Arc::new(Self {
             client,
+            zkas_node_endpoint: address,
             notification_rx,
             kaspa_notification_rx,
             connected: Arc::new(Mutex::new(true)),
@@ -1057,7 +1080,10 @@ impl KaspaApi {
                 }
             }
 
-            warn!("Kaspa is not synced, waiting for sync before starting bridge");
+            warn!(
+                "Connected to ZKas RPC at {}, but GetSyncStatus returned false; waiting for the node to become mining-ready",
+                self.zkas_node_endpoint
+            );
 
             tokio::select! {
                 _ = shutdown_rx.wait_for(|v| *v) => {
