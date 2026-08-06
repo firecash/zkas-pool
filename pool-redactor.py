@@ -176,6 +176,8 @@ BLOCKSHARE_MIN_NET = 30   # need at least this many network blocks before trusti
 # persisted to disk so it survives redactor AND bridge restarts. ------------
 PAYOUT_HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                    "redactor-payout-history.json")
+PAYOUT_RECOVERY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "payout-history-recovery.json")
 PAYOUT_HISTORY_CAP = 200        # per wallet
 _payouts_lock = threading.Lock()
 _payouts = {}                   # wallet -> [{"ts","worker","hash"}] newest LAST
@@ -193,6 +195,22 @@ def _payouts_load():
                         if isinstance(v, list)}
             _payouts_seen = {e.get("hash") for v in _payouts.values() for e in v
                              if isinstance(e, dict) and e.get("hash")}
+        # Merge records previously evicted by the old unsorted retention logic.
+        # This is idempotent and uses the same timestamp ordering as new data.
+        try:
+            with open(PAYOUT_RECOVERY_FILE, encoding="utf-8") as f:
+                recovery = json.load(f)
+            for wallet, entries in (recovery.items() if isinstance(recovery, dict) else []):
+                target = _payouts.setdefault(wallet, [])
+                for entry in entries if isinstance(entries, list) else []:
+                    h = entry.get("hash") if isinstance(entry, dict) else None
+                    if h and h not in _payouts_seen:
+                        target.append(entry)
+                        _payouts_seen.add(h)
+                target.sort(key=lambda e: int(e.get("ts", 0)))
+                del target[:-PAYOUT_HISTORY_CAP]
+        except FileNotFoundError:
+            pass
     except Exception:
         _payouts, _payouts_seen = {}, set()
 
@@ -212,6 +230,10 @@ def _payouts_record(blocks):
                 ts = int(time.time())
             lst = _payouts.setdefault(w, [])
             lst.append({"ts": ts, "worker": b.get("worker") or "—", "hash": h})
+            # Blocks can be delivered by the bridge out of timestamp order.
+            # Retain the newest records by timestamp, otherwise a late-arriving
+            # old block can evict a genuinely newer payout from the history.
+            lst.sort(key=lambda e: int(e.get("ts", 0)))
             del lst[:-PAYOUT_HISTORY_CAP]
             _payouts_seen.add(h)
             _payouts_dirty = True
@@ -235,7 +257,11 @@ def _payouts_save():
 
 def payout_history(wallet, limit=50):
     with _payouts_lock:
-        lst = list(_payouts.get(wallet, []))
+        # Bridge block gauges are not guaranteed to arrive chronologically.
+        # Sort before applying the retention window; slicing the raw insertion
+        # order can hide newer payouts (for example July 30 entries behind
+        # later-arriving July 28 records).
+        lst = sorted(_payouts.get(wallet, []), key=lambda e: int(e.get("ts", 0)))
     return [{"ts": e["ts"], "worker": e["worker"], "hash": e["hash"],
              "amountFc": REWARD_FC} for e in reversed(lst[-limit:])]
 
