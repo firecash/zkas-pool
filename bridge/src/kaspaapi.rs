@@ -1638,7 +1638,7 @@ mod submit_block_report_tests {
 
     #[test]
     fn success_report_resolves_to_accepted() {
-        let resp = SubmitBlockResponse { report: SubmitBlockReport::Success };
+        let resp = SubmitBlockResponse { report: SubmitBlockReport::Success, reject_detail: None };
         let out = classify(resp);
         assert!(out.is_accepted(), "Success must produce BlockSubmitOutcome::Accepted");
         match out {
@@ -1656,7 +1656,8 @@ mod submit_block_report_tests {
         // regression). Reject(*) must stay Ok(RejectedByNode(_))
         // so the share-handler credits the share and only the
         // BlockAccepted event is suppressed.
-        let resp = SubmitBlockResponse { report: SubmitBlockReport::Reject(SubmitBlockRejectReason::BlockInvalid) };
+        let resp =
+            SubmitBlockResponse { report: SubmitBlockReport::Reject(SubmitBlockRejectReason::BlockInvalid), reject_detail: None };
         let out = classify(resp);
         assert!(!out.is_accepted(), "Reject(BlockInvalid) must NOT be Accepted");
         match out {
@@ -1667,7 +1668,7 @@ mod submit_block_report_tests {
 
     #[test]
     fn reject_is_in_ibd_resolves_to_rejected() {
-        let resp = SubmitBlockResponse { report: SubmitBlockReport::Reject(SubmitBlockRejectReason::IsInIBD) };
+        let resp = SubmitBlockResponse { report: SubmitBlockReport::Reject(SubmitBlockRejectReason::IsInIBD), reject_detail: None };
         match classify(resp) {
             BlockSubmitOutcome::RejectedByNode(SubmitBlockRejectReason::IsInIBD) => {}
             other => panic!("expected RejectedByNode(IsInIBD), got {other:?}"),
@@ -1676,7 +1677,8 @@ mod submit_block_report_tests {
 
     #[test]
     fn reject_route_is_full_resolves_to_rejected() {
-        let resp = SubmitBlockResponse { report: SubmitBlockReport::Reject(SubmitBlockRejectReason::RouteIsFull) };
+        let resp =
+            SubmitBlockResponse { report: SubmitBlockReport::Reject(SubmitBlockRejectReason::RouteIsFull), reject_detail: None };
         match classify(resp) {
             BlockSubmitOutcome::RejectedByNode(SubmitBlockRejectReason::RouteIsFull) => {}
             other => panic!("expected RejectedByNode(RouteIsFull), got {other:?}"),

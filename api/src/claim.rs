@@ -17,11 +17,11 @@
 //!
 //! The signature check itself is delegated to a [`SignatureVerifier`] — in
 //! production, `shielded_core::message::verify_message`, which binds the presented
-//! FVK to the claimed address and verifies the RedPallas signature. Injecting it
+//! FVK to the claimed address and verifies the `RedPallas` signature. Injecting it
 //! keeps this module (and its tests) free of the Orchard/Halo2 dependency.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 /// Length of an issued challenge nonce, in bytes.
@@ -81,15 +81,19 @@ impl ChallengeStore {
 
     /// Challenge lifetime.
     #[must_use]
-    pub fn ttl(&self) -> Duration {
+    pub const fn ttl(&self) -> Duration {
         self.ttl
+    }
+
+    fn lock_pending(&self) -> MutexGuard<'_, HashMap<Vec<u8>, Pending>> {
+        self.pending.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Issue a fresh challenge for `address`, overwriting any prior live one.
     /// `now` and `nonce` are injected so the caller controls the clock and RNG
     /// (production passes `Instant::now()` and a CSPRNG-filled array).
     pub fn issue_at(&self, address: &[u8], nonce: Challenge, now: Instant) -> Challenge {
-        let mut map = self.pending.lock().expect("challenge mutex poisoned");
+        let mut map = self.lock_pending();
         map.insert(
             address.to_vec(),
             Pending {
@@ -113,7 +117,7 @@ impl ChallengeStore {
     ) -> Result<Challenge, ClaimError> {
         // Take the challenge out regardless of outcome: single-use, no replay.
         let pending = {
-            let mut map = self.pending.lock().expect("challenge mutex poisoned");
+            let mut map = self.lock_pending();
             map.remove(address)
         };
         let pending = pending.ok_or(ClaimError::NoChallenge)?;
@@ -129,14 +133,14 @@ impl ChallengeStore {
 
     /// Drop expired challenges. Call periodically to bound memory.
     pub fn sweep_expired(&self, now: Instant) {
-        let mut map = self.pending.lock().expect("challenge mutex poisoned");
+        let mut map = self.lock_pending();
         map.retain(|_, p| now < p.expires_at);
     }
 
     /// Number of live (possibly-expired-but-unswept) challenges. Test/telemetry aid.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.pending.lock().expect("challenge mutex poisoned").len()
+        self.lock_pending().len()
     }
 
     /// Whether the store holds no challenges.
