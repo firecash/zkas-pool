@@ -172,42 +172,24 @@ proptest! {
         prop_assert_eq!(a.applied_tier, tier);
     }
 
-    /// Elite rebate is exactly the full fee_share (definition of
-    /// 100% rebate). Equivalently: elite's `pool_fee` is zero
-    /// modulo the integer-truncation residue.
+    /// ZKas has no NACHO rebate rail, so Elite does not accrue a rebate.
     #[test]
-    fn prop_elite_pool_fee_is_truncation_residue(
+    fn prop_elite_has_no_nacho_rebate(
         gross in gross_strategy(),
         cfg in fee_config_strategy(),
     ) {
         let a = cfg.compute_allocation(gross, WalletTier::Elite).unwrap();
-        // fee_share = gross * topline / 10_000; truncated.
-        // nacho_accrual = fee_share * 10_000 / 10_000 = fee_share.
-        // pool_fee = fee_share - nacho_accrual = 0.
-        prop_assert_eq!(a.pool_fee_sompi, 0, "elite always rebates 100%; pool_fee = 0 exactly");
+        prop_assert_eq!(a.nacho_accrual_sompi, 0);
     }
 
-    /// Standard rebate is exactly 33% of fee_share (with integer
-    /// truncation). Equivalently: standard's `pool_fee` equals
-    /// `fee_share - floor(fee_share * 0.33)`.
+    /// ZKas has no NACHO rebate rail, so Standard does not accrue a rebate.
     #[test]
-    fn prop_standard_rebate_is_33_percent_of_fee(
+    fn prop_standard_has_no_nacho_rebate(
         gross in gross_strategy(),
         cfg in fee_config_strategy(),
     ) {
         let a = cfg.compute_allocation(gross, WalletTier::Standard).unwrap();
-        let fee_share = a.pool_fee_sompi + a.nacho_accrual_sompi;
-        let expected_nacho = fee_share * 33 / 100; // post-truncation
-        // Allow 0/1 sompi tolerance from the two-step truncation
-        // (fee_share is itself truncated; then nacho_accrual is
-        // re-truncated against bps 3300/10000 not 33/100).
-        let diff = (a.nacho_accrual_sompi - expected_nacho).abs();
-        prop_assert!(
-            diff <= 1,
-            "standard rebate should approximate 33% of fee_share within 1 sompi; \
-             gross={} fee_share={} nacho={} expected≈{} diff={}",
-            gross, fee_share, a.nacho_accrual_sompi, expected_nacho, diff
-        );
+        prop_assert_eq!(a.nacho_accrual_sompi, 0);
     }
 }
 
@@ -231,19 +213,18 @@ fn default_topline_known_values() {
         .compute_allocation(1_000_000_000, WalletTier::Standard)
         .unwrap();
     // fee_share = 1_000_000_000 * 75 / 10_000 = 7_500_000
-    // nacho     = 7_500_000 * 3300 / 10_000 = 2_475_000
-    // pool_fee  = 7_500_000 - 2_475_000 = 5_025_000
+    // ZKas has no NACHO rail, so the pool retains the fee share.
     // net       = 1_000_000_000 - 7_500_000 = 992_500_000
-    assert_eq!(alloc.pool_fee_sompi, 5_025_000);
-    assert_eq!(alloc.nacho_accrual_sompi, 2_475_000);
+    assert_eq!(alloc.pool_fee_sompi, 7_500_000);
+    assert_eq!(alloc.nacho_accrual_sompi, 0);
     assert_eq!(alloc.net_payout_sompi, 992_500_000);
     assert!(alloc.is_balanced());
 
     let elite = cfg
         .compute_allocation(1_000_000_000, WalletTier::Elite)
         .unwrap();
-    assert_eq!(elite.pool_fee_sompi, 0);
-    assert_eq!(elite.nacho_accrual_sompi, 7_500_000);
+    assert_eq!(elite.pool_fee_sompi, 7_500_000);
+    assert_eq!(elite.nacho_accrual_sompi, 0);
     assert_eq!(elite.net_payout_sompi, 992_500_000);
 }
 

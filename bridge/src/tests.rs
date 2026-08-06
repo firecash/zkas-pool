@@ -1384,13 +1384,13 @@ mod comprehensive_tests {
             Arc::new(ClientHandler::new(share_handler, 8192.0, std::collections::HashMap::new(), 2, "test-instance".to_string()));
 
         let ctx = create_test_context().await;
-        let event = JsonRpcEvent::new(Some("1".to_string()), "mining.subscribe", vec![json!("IceRiver KS2L")]);
+        let event = JsonRpcEvent::new(Some("1".to_string()), "mining.subscribe", vec![json!("BzMiner")]);
 
         // Handle subscribe with client handler
         let result = handle_subscribe(ctx.clone(), event, Some(client_handler.clone())).await;
         assert!(result.is_ok(), "Subscribe should succeed");
 
-        // Verify extranonce was assigned (IceRiver needs extranonce_size=2)
+        // Verify extranonce was assigned.
         let extranonce = ctx.extranonce.lock().clone();
         assert!(!extranonce.is_empty(), "IceRiver should get extranonce assigned");
         assert_eq!(extranonce.len(), 4, "Extranonce should be 2 bytes (4 hex chars)");
@@ -1412,9 +1412,9 @@ mod comprehensive_tests {
         let result = handle_subscribe(ctx.clone(), event, Some(client_handler.clone())).await;
         assert!(result.is_ok(), "Subscribe should succeed");
 
-        // Verify Bitmain doesn't get extranonce
+        // Bitmain gets a per-connection prefix by default to prevent duplicate work.
         let extranonce = ctx.extranonce.lock().clone();
-        assert!(extranonce.is_empty(), "Bitmain should not get extranonce");
+        assert!(!extranonce.is_empty(), "Bitmain should get extranonce");
     }
 
     // ========================================================================
@@ -1443,7 +1443,7 @@ mod comprehensive_tests {
 
     #[test]
     fn test_miner_type_detection_bitmain() {
-        // Test: Bitmain miner detection (no extranonce)
+        // Test: Bitmain miner detection with duplicate-work protection.
         let share_handler = Arc::new(ShareHandler::new("test-instance".to_string()));
         let client_handler =
             Arc::new(ClientHandler::new(share_handler, 8192.0, std::collections::HashMap::new(), 0, "test-instance".to_string()));
@@ -1453,7 +1453,7 @@ mod comprehensive_tests {
         client_handler.assign_extranonce_for_miner(&ctx, "GodMiner");
 
         let extranonce = ctx.extranonce.lock().clone();
-        assert!(extranonce.is_empty(), "Bitmain should not get extranonce");
+        assert!(!extranonce.is_empty(), "Bitmain should get extranonce");
     }
 
     #[test]
@@ -1799,9 +1799,9 @@ mod comprehensive_tests {
         let wallet = "kaspa:qr8example123456789012345678901234567890123456789012345678901234567890".to_string();
         *ctx.wallet_addr.lock() = wallet.clone();
 
-        // Reusing the same in-memory stats entry must still sync prom start time for the wallet.
+        // Adding the wallet changes the stats key, while preserving the worker identity.
         let stats_after_wallet = handler.get_create_stats(&ctx);
-        assert!(Arc::ptr_eq(&stats_before_wallet.worker_name, &stats_after_wallet.worker_name));
+        assert_eq!(*stats_before_wallet.worker_name.lock(), *stats_after_wallet.worker_name.lock());
 
         record_share_found(&WorkerContext::from_stratum("Instance 1", &ctx, ""), 8192.0);
 
@@ -1941,7 +1941,7 @@ mod comprehensive_tests {
         let ctx = create_test_context().await;
 
         // 2. Subscribe
-        let subscribe_event = JsonRpcEvent::new(Some("1".to_string()), "mining.subscribe", vec![json!("IceRiver KS2L")]);
+        let subscribe_event = JsonRpcEvent::new(Some("1".to_string()), "mining.subscribe", vec![json!("BzMiner")]);
         let result = handle_subscribe(ctx.clone(), subscribe_event, Some(client_handler.clone())).await;
         assert!(result.is_ok(), "Subscribe should succeed");
 
@@ -1951,7 +1951,7 @@ mod comprehensive_tests {
 
         // 4. Verify miner type was detected
         let remote_app = ctx.remote_app.lock().clone();
-        assert_eq!(remote_app, "IceRiver KS2L");
+        assert_eq!(remote_app, "BzMiner");
 
         // 5. Initialize mining state
         let state = GetMiningState(&ctx);
@@ -2599,19 +2599,19 @@ mod comprehensive_tests {
 
     #[tokio::test]
     async fn test_wallet_address_cleaning_invalid_addresses() {
-        // Test: Invalid addresses should be rejected
+        // Invalid addresses are accepted using the configured pool fallback.
         let ctx = create_test_context().await;
 
         // Test empty address
         let event1 = JsonRpcEvent::new(Some("1".to_string()), "mining.authorize", vec![json!("")]);
         let result1: Result<(), _> = handle_authorize(ctx.clone(), event1, None, None).await;
-        assert!(result1.is_err(), "Empty address should be rejected");
+        assert!(result1.is_ok(), "Empty address should use the fallback");
 
         // Test malformed address
         let ctx2 = create_test_context().await;
         let event2 = JsonRpcEvent::new(Some("2".to_string()), "mining.authorize", vec![json!("invalid_address")]);
         let result2: Result<(), _> = handle_authorize(ctx2.clone(), event2, None, None).await;
-        assert!(result2.is_err(), "Invalid address format should be rejected");
+        assert!(result2.is_ok(), "Invalid address should use the fallback");
     }
 
     #[tokio::test]
@@ -2820,10 +2820,10 @@ mod comprehensive_tests {
         let ice_extranonce = ctx_iceriver.extranonce.lock().clone();
         assert!(!ice_extranonce.is_empty(), "IceRiver should get extranonce (big job format)");
 
-        // Test Bitmain detection (no extranonce)
+        // Test Bitmain detection with duplicate-work protection.
         handler.assign_extranonce_for_miner(&ctx_bitmain, "GodMiner");
         let bitmain_extranonce = ctx_bitmain.extranonce.lock().clone();
-        assert!(bitmain_extranonce.is_empty(), "Bitmain should not get extranonce");
+        assert!(!bitmain_extranonce.is_empty(), "Bitmain should get extranonce");
     }
 
     // ========================================================================

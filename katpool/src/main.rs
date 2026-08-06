@@ -1785,8 +1785,8 @@ fn optional_usize(var: &str) -> Result<Option<usize>> {
 /// 1. `KATPOOL_NETWORK` env override (required for `testnet-11`,
 ///    `devnet`, `simnet` because their bech32 prefixes overlap
 ///    other targets).
-/// 2. Derived from the first pool address bech32 prefix — `kaspa:` →
-///    `mainnet`, `kaspatest:` → `testnet-10` (the active testnet at
+/// 2. Derived from the first pool address bech32 prefix — `zkas:` →
+///    `mainnet`, `zkastest:` → `testnet-10` (the active testnet at
 ///    the time of writing; override via `KATPOOL_NETWORK` for
 ///    testnet-11).
 ///
@@ -1896,9 +1896,9 @@ mod tests {
         parts.iter().map(|s| (*s).to_owned()).collect()
     }
 
-    // A real testnet-10 address; only its `kaspatest:` prefix matters here.
+    // A real testnet-10 address; only its `zkastest:` prefix matters here.
     const TN10_ADDR: &str =
-        "kaspatest:qq5fysv96t636u4slda59daza6tn5j5p5x5953hs6dstajuw0u6l6ez5wz3gd";
+        "zkastest:qq5fysv96t636u4slda59daza6tn5j5p5x5953hs6dstajuw0u6l6ez5wz3gd";
 
     #[test]
     fn resolve_network_derives_from_address_prefix() -> anyhow::Result<()> {

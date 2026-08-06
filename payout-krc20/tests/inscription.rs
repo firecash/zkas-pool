@@ -81,7 +81,7 @@ fn commit_address_is_testnet_p2sh_and_binds_the_data() {
     );
     assert_eq!(addr.prefix, Prefix::Testnet);
     assert!(
-        addr.to_string().starts_with("kaspatest:"),
+        addr.to_string().starts_with("zkastest:"),
         "testnet-10 prefix"
     );
 
