@@ -237,6 +237,6 @@ mod tests {
     fn max_reward_does_not_overflow() {
         let s = vest_reward(i64::MAX, Duration::ZERO);
         assert!(s.is_balanced());
-        assert_eq!(s.miner_sompi, i64::MAX / 2);
+        assert_eq!(s.miner_sompi, 4_611_686_018_427_387_903);
     }
 }
