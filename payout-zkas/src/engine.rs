@@ -1,6 +1,7 @@
-//! The ZKas shielded payout engine: a single-leader periodic loop that pays
-//! each eligible miner's **full accrued balance** (no vesting, no claim, no
-//! signature) with one shielded transaction per recipient.
+//! The ZKas shielded payout engine is a single-leader periodic payout loop.
+//!
+//! It pays each eligible miner's **full accrued balance** (no vesting, no
+//! claim, no signature) with one shielded transaction per recipient.
 //!
 //! ## Cycle model
 //!
@@ -111,6 +112,9 @@ pub enum EngineError {
     /// Chain read failure.
     #[error(transparent)]
     Chain(#[from] ChainError),
+    /// A consensus DAA score cannot be represented by PostgreSQL `BIGINT`.
+    #[error("DAA score {0} exceeds the database range")]
+    DaaOutOfRange(u64),
     /// `cycle_span_daa` too small to confirm in-window.
     #[error("cycle_span_daa ({span}) must exceed confirmation depth ({depth})")]
     SpanTooSmall {
@@ -214,10 +218,10 @@ impl ZkasPayoutEngine {
 
         // ---- resume or plan the bucket's cycle -----------------------
         let key = payout::idempotency_key(PayoutKind::Zkas, start, end);
-        let cycle: PayoutCycle = match payout::find_cycle_by_idempotency_key(&self.db, &key).await?
-        {
-            Some(c) => c,
-            None => {
+        let cycle: PayoutCycle =
+            if let Some(cycle) = payout::find_cycle_by_idempotency_key(&self.db, &key).await? {
+                cycle
+            } else {
                 let plan = plan_zkas_cycle(
                     &self.db,
                     PlanZkasCycleParams {
@@ -230,8 +234,7 @@ impl ZkasPayoutEngine {
                 .await?;
                 stats.planned = plan.payouts_planned;
                 plan.cycle
-            }
-        };
+            };
 
         // ---- broadcast pass ------------------------------------------
         self.broadcast_pass(&cycle, &mut stats).await?;
@@ -439,7 +442,9 @@ impl ZkasPayoutEngine {
             ) {
                 ConfirmationState::Confirmed => {
                     if let (Some(daa), None) = (newly_accepted_daa, recorded) {
-                        payout::mark_payout_accepted(&self.db, p.payout_id, daa as i64).await?;
+                        let daa =
+                            i64::try_from(daa).map_err(|_| EngineError::DaaOutOfRange(daa))?;
+                        payout::mark_payout_accepted(&self.db, p.payout_id, daa).await?;
                     }
                     payout::mark_payout_confirmed(&self.db, p.payout_id).await?;
                     stats.confirmed += 1;
@@ -448,7 +453,9 @@ impl ZkasPayoutEngine {
                     if recorded.is_none()
                         && let Some(daa) = newly_accepted_daa
                     {
-                        payout::mark_payout_accepted(&self.db, p.payout_id, daa as i64).await?;
+                        let daa =
+                            i64::try_from(daa).map_err(|_| EngineError::DaaOutOfRange(daa))?;
+                        payout::mark_payout_accepted(&self.db, p.payout_id, daa).await?;
                         stats.accepted += 1;
                     }
                 }
@@ -495,7 +502,7 @@ impl ZkasPayoutEngine {
         };
         match status {
             Some(PayoutCycleStatus::Settled) => {
-                payout::mark_cycle_settled(&self.db, cycle_id).await?
+                payout::mark_cycle_settled(&self.db, cycle_id).await?;
             }
             Some(PayoutCycleStatus::PartiallySettled) => {
                 payout::mark_cycle_partially_settled(&self.db, cycle_id).await?;
@@ -504,7 +511,7 @@ impl ZkasPayoutEngine {
                 payout::mark_cycle_broadcasting(&self.db, cycle_id).await?;
             }
             Some(PayoutCycleStatus::Failed) => {
-                payout::mark_cycle_failed(&self.db, cycle_id).await?
+                payout::mark_cycle_failed(&self.db, cycle_id).await?;
             }
             _ => {}
         }

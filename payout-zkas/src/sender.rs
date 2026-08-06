@@ -142,8 +142,12 @@ pub fn parse_txid(stdout: &str) -> Option<KaspaHash> {
 }
 
 fn tail(s: &str, max_lines: usize) -> String {
-    let lines: Vec<&str> = s.lines().rev().take(max_lines).collect();
-    lines.into_iter().rev().collect::<Vec<_>>().join(" | ")
+    s.lines()
+        .rev()
+        .take(max_lines)
+        .rev()
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 #[async_trait]
@@ -203,15 +207,17 @@ impl ShieldedSender for ShieldedPayCli {
                 stderr_tail: tail(&stderr, 4),
             });
         }
-        match parse_txid(&stdout) {
-            Some(txid) => {
+        parse_txid(&stdout).map_or_else(
+            || {
+                Err(SendError::NoTxid {
+                    stdout_tail: tail(&stdout, 4),
+                })
+            },
+            |txid| {
                 info!(%txid, amount_sompi, "shielded send accepted by node");
                 Ok(txid)
-            }
-            None => Err(SendError::NoTxid {
-                stdout_tail: tail(&stdout, 4),
-            }),
-        }
+            },
+        )
     }
 }
 
