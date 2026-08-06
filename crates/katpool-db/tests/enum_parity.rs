@@ -97,7 +97,7 @@ where
 #[tokio::test]
 async fn payout_kind_round_trips_every_variant() {
     let env = setup().await;
-    for v in [PayoutKind::Kas, PayoutKind::Krc20Nacho] {
+    for v in [PayoutKind::Kas, PayoutKind::Krc20Nacho, PayoutKind::Zkas] {
         let got = roundtrip(&env.db, "payout_kind", v).await;
         assert_eq!(got, v, "payout_kind variant {v:?} drifted");
     }
@@ -201,7 +201,7 @@ mod exhaustiveness_guards {
     #[allow(dead_code)]
     fn payout_kind(v: PayoutKind) {
         match v {
-            PayoutKind::Kas | PayoutKind::Krc20Nacho => {}
+            PayoutKind::Kas | PayoutKind::Krc20Nacho | PayoutKind::Zkas => {}
         }
     }
 

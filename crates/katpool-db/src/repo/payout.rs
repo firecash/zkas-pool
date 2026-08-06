@@ -28,7 +28,7 @@ pub enum PayoutKind {
     Kas,
     /// KRC-20 NACHO payout cycle (commit/reveal pair per recipient).
     Krc20Nacho,
-    /// ZKas shielded payout cycle (one Orchard shielded transaction per
+    /// `ZKas` shielded payout cycle (one Orchard shielded transaction per
     /// recipient, sent from the pool's shielded treasury).
     Zkas,
 }
@@ -435,13 +435,13 @@ pub async fn list_kas_eligible_wallets<'e, E: PgExecutor<'e>>(
     .map_err(DbError::from)
 }
 
-/// Default minimum payable balance for a ZKas shielded payout (5 ZKAS).
+/// Default minimum payable balance for a `ZKas` shielded payout (5 ZKAS).
 ///
 /// Each recipient costs one full Orchard proof (seconds of CPU) plus the
 /// shielded transaction fee, so dust-level balances are left to accrue.
 pub const DEFAULT_ZKAS_PAYOUT_THRESHOLD_SOMPI: i64 = 500_000_000;
 
-/// Wallets whose payable ZKas balance meets `threshold_sompi`.
+/// Wallets whose payable `ZKas` balance meets `threshold_sompi`.
 ///
 /// Identical accounting shape to [`list_kas_eligible_wallets`] — payable is
 /// `sum(share_allocation.net_payout_sompi)` minus confirmed payouts — but
@@ -807,7 +807,7 @@ pub async fn list_for_cycle<'e, E: PgExecutor<'e>>(
     .map_err(DbError::from)
 }
 
-/// One in-flight (submitted/accepted) ZKas payout awaiting confirmation.
+/// One in-flight (submitted/accepted) `ZKas` payout awaiting confirmation.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ZkasInFlightPayout {
     /// `payout.id`.
@@ -820,7 +820,7 @@ pub struct ZkasInFlightPayout {
     pub accepted_daa_score: Option<i64>,
 }
 
-/// Every submitted-but-unconfirmed ZKas payout, across **all** cycles, so
+/// Every submitted-but-unconfirmed `ZKas` payout, across **all** cycles, so
 /// a straggler from a previous window (engine downtime over a rollover)
 /// still gets confirmed instead of stranding forever.
 pub async fn list_zkas_in_flight_payouts<'e, E: PgExecutor<'e>>(

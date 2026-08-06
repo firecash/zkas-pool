@@ -59,7 +59,7 @@ pub async fn set<'e, E: PgExecutor<'e>>(
 }
 
 /// Delete a key. Idempotent: returns `true` iff a row was removed.
-/// Used by latch-style keys (e.g. the ZKas payout in-flight guard).
+/// Used by latch-style keys (e.g. the `ZKas` payout in-flight guard).
 pub async fn delete<'e, E: PgExecutor<'e>>(executor: E, key: &str) -> Result<bool, DbError> {
     let result = sqlx::query("DELETE FROM pool_meta WHERE key = $1")
         .bind(key)

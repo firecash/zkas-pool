@@ -39,6 +39,7 @@ pub const fn payout_kind_str(kind: PayoutKind) -> &'static str {
     match kind {
         PayoutKind::Kas => "kas",
         PayoutKind::Krc20Nacho => "nacho",
+        PayoutKind::Zkas => "zkas",
     }
 }
 
