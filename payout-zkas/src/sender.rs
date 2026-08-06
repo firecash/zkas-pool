@@ -142,12 +142,9 @@ pub fn parse_txid(stdout: &str) -> Option<KaspaHash> {
 }
 
 fn tail(s: &str, max_lines: usize) -> String {
-    s.lines()
-        .rev()
-        .take(max_lines)
-        .rev()
-        .collect::<Vec<_>>()
-        .join(" | ")
+    let mut lines = s.lines().rev().take(max_lines).collect::<Vec<_>>();
+    lines.reverse();
+    lines.join(" | ")
 }
 
 #[async_trait]
