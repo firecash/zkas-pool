@@ -53,10 +53,7 @@ pub fn coinbase_merkle_branch(txs: &[Transaction]) -> Vec<Hash> {
         branch.push(level[idx ^ 1].unwrap_or(ZERO_HASH));
         let mut next = Vec::with_capacity(level.len() / 2);
         for pair in level.chunks(2) {
-            let combined = match pair[0] {
-                None => None,
-                Some(l) => Some(kaspa_merkle::merkle_hash(l, pair.get(1).copied().flatten().unwrap_or(ZERO_HASH))),
-            };
+            let combined = pair[0].map(|l| kaspa_merkle::merkle_hash(l, pair.get(1).copied().flatten().unwrap_or(ZERO_HASH)));
             next.push(combined);
         }
         idx /= 2;

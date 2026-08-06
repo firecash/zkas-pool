@@ -638,10 +638,12 @@ impl KaspaApi {
 
         {
             let cache = self.kaspa_parent_cache.lock().await;
-            if let Some((ch, parent, at)) = cache.as_ref() {
-                if !force && *ch == h_fc && at.elapsed() < KASPA_PARENT_TTL {
-                    return Ok(parent.clone());
-                }
+            if let Some((ch, parent, at)) = cache.as_ref()
+                && !force
+                && *ch == h_fc
+                && at.elapsed() < KASPA_PARENT_TTL
+            {
+                return Ok(parent.clone());
             }
         }
         let _permit = self.kaspa_parent_rpc_gate.acquire().await.context("Kaspa parent RPC gate closed")?;
@@ -1638,7 +1640,7 @@ mod submit_block_report_tests {
 
     #[test]
     fn success_report_resolves_to_accepted() {
-        let resp = SubmitBlockResponse { report: SubmitBlockReport::Success, reject_detail: None };
+        let resp = SubmitBlockResponse { report: SubmitBlockReport::Success, reject_detail: String::new() };
         let out = classify(resp);
         assert!(out.is_accepted(), "Success must produce BlockSubmitOutcome::Accepted");
         match out {
@@ -1656,8 +1658,10 @@ mod submit_block_report_tests {
         // regression). Reject(*) must stay Ok(RejectedByNode(_))
         // so the share-handler credits the share and only the
         // BlockAccepted event is suppressed.
-        let resp =
-            SubmitBlockResponse { report: SubmitBlockReport::Reject(SubmitBlockRejectReason::BlockInvalid), reject_detail: None };
+        let resp = SubmitBlockResponse {
+            report: SubmitBlockReport::Reject(SubmitBlockRejectReason::BlockInvalid),
+            reject_detail: String::new(),
+        };
         let out = classify(resp);
         assert!(!out.is_accepted(), "Reject(BlockInvalid) must NOT be Accepted");
         match out {
@@ -1668,7 +1672,8 @@ mod submit_block_report_tests {
 
     #[test]
     fn reject_is_in_ibd_resolves_to_rejected() {
-        let resp = SubmitBlockResponse { report: SubmitBlockReport::Reject(SubmitBlockRejectReason::IsInIBD), reject_detail: None };
+        let resp =
+            SubmitBlockResponse { report: SubmitBlockReport::Reject(SubmitBlockRejectReason::IsInIBD), reject_detail: String::new() };
         match classify(resp) {
             BlockSubmitOutcome::RejectedByNode(SubmitBlockRejectReason::IsInIBD) => {}
             other => panic!("expected RejectedByNode(IsInIBD), got {other:?}"),
@@ -1677,8 +1682,10 @@ mod submit_block_report_tests {
 
     #[test]
     fn reject_route_is_full_resolves_to_rejected() {
-        let resp =
-            SubmitBlockResponse { report: SubmitBlockReport::Reject(SubmitBlockRejectReason::RouteIsFull), reject_detail: None };
+        let resp = SubmitBlockResponse {
+            report: SubmitBlockReport::Reject(SubmitBlockRejectReason::RouteIsFull),
+            reject_detail: String::new(),
+        };
         match classify(resp) {
             BlockSubmitOutcome::RejectedByNode(SubmitBlockRejectReason::RouteIsFull) => {}
             other => panic!("expected RejectedByNode(RouteIsFull), got {other:?}"),

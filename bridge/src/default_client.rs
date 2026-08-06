@@ -170,12 +170,10 @@ pub async fn handle_subscribe(
     // The working 2Miners and Kaspa-pool IceRiver paths send the nonce prefix
     // after subscribe and the difficulty only after authorize. Do not send the
     // same values again from both phases.
-    if !kaspa_common_protocol && remote_app_lower.contains("iceriver") {
-        if client_handler.is_some() {
-            tracing::info!("[HANDSHAKE] sending pre-authorize extranonce to IceRiver {}:{}", ctx.remote_addr, ctx.remote_port);
-            if !extranonce.is_empty() {
-                send_extranonce(ctx.clone()).await?;
-            }
+    if !kaspa_common_protocol && remote_app_lower.contains("iceriver") && client_handler.is_some() {
+        tracing::info!("[HANDSHAKE] sending pre-authorize extranonce to IceRiver {}:{}", ctx.remote_addr, ctx.remote_port);
+        if !extranonce.is_empty() {
+            send_extranonce(ctx.clone()).await?;
         }
     }
 
