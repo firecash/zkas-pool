@@ -74,6 +74,7 @@ impl VestedSplit {
 /// # Panics
 /// Panics if `gross_sompi` is negative (a credited reward is never negative).
 #[must_use]
+#[allow(clippy::integer_division)] // Basis-point accounting intentionally rounds down.
 pub fn vest_reward(gross_sompi: i64, age: Duration) -> VestedSplit {
     assert!(gross_sompi >= 0, "gross reward must be non-negative");
     let matured = age >= VESTING_CLIFF;
@@ -83,8 +84,12 @@ pub fn vest_reward(gross_sompi: i64, age: Duration) -> VestedSplit {
         EARLY_PAYOUT_BPS
     };
     // floor(gross * bps / 10_000); i128 avoids overflow for any i64 gross.
-    let miner_sompi =
-        (i128::from(gross_sompi) * i128::from(applied_bps) / i128::from(FULL_PAYOUT_BPS)) as i64;
+    let scaled = i128::from(gross_sompi) * i128::from(applied_bps) / i128::from(FULL_PAYOUT_BPS);
+    // `gross_sompi` is non-negative and `applied_bps <= FULL_PAYOUT_BPS`, so
+    // the scaled value is provably within the original i64 range.
+    let Ok(miner_sompi) = i64::try_from(scaled) else {
+        unreachable!("basis-point payout cannot exceed its i64 gross value")
+    };
     let forfeit_sompi = gross_sompi - miner_sompi;
     VestedSplit {
         gross_sompi,

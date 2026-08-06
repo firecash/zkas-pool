@@ -7,11 +7,11 @@
 //! no mining-password requirement — the signature is the security boundary.
 //!
 //! Flow:
-//! 1. `POST /claim/challenge {address}` → [`ChallengeStore::issue`] returns a random
+//! 1. `POST /claim/challenge {address}` → [`ChallengeStore::issue_at`] returns a random
 //!    nonce bound to that address, valid for [`ChallengeStore::ttl`].
 //! 2. Miner signs the nonce with their shielded key (e.g. `shielded-pay sign`),
 //!    producing `(fvk, sig)`.
-//! 3. `POST /claim {address, fvk, sig}` → [`ChallengeStore::redeem`] consumes the
+//! 3. `POST /claim {address, fvk, sig}` → [`ChallengeStore::redeem_at`] consumes the
 //!    challenge (single-use) and the injected [`SignatureVerifier`] checks the
 //!    signature; on success the payout engine pays the vested balance.
 //!

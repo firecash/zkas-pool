@@ -4,7 +4,7 @@
 //! that decides which rewards each one moves and whether a signature is required:
 //!
 //! - **[`PayoutTrigger::AutoSweep`]** — the pool periodically sweeps every reward
-//!   that has reached the [`VESTING_CLIFF`](crate::vesting::VESTING_CLIFF) and sends
+//!   that has reached the [`VESTING_CLIFF`] and sends
 //!   it to the miner's shielded address at **100%**. This needs **no signature and
 //!   no action from the miner**: once a reward is ≥ 10 days old it is auto-sent.
 //!   Rewards still inside the cliff are *deferred* — left untouched to keep vesting.
@@ -121,7 +121,7 @@ where
         }
         PayoutTrigger::SignedClaim => {
             let rewards: Vec<(i64, Duration)> = rewards.into_iter().collect();
-            let included = rewards.len() as u32;
+            let included = u32::try_from(rewards.len()).unwrap_or(u32::MAX);
             let totals = vest_claim(rewards);
             PayoutPlan {
                 trigger,
@@ -138,7 +138,7 @@ where
 /// cliff). Returns [`Duration::ZERO`] if it is already matured — i.e. it will be
 /// paid, unsigned, on the next sweep.
 #[must_use]
-pub fn time_until_auto_payout(age: Duration) -> Duration {
+pub const fn time_until_auto_payout(age: Duration) -> Duration {
     VESTING_CLIFF.saturating_sub(age)
 }
 

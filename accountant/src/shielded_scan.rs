@@ -72,15 +72,18 @@ pub const SHIELDED_SCAN_CURSOR_KEY: &str = "shielded_scan_cursor";
 /// Chain blocks requested per `GetShieldedBlocks` page.
 pub const DEFAULT_PAGE_LIMIT: u64 = 1_000;
 
-/// Pages consumed per sweep. Bounds a single tracker sweep's duration when
+/// Pages consumed per sweep.
+///
+/// Bounds a single tracker sweep's duration when
 /// catching up (first run / long downtime); the remainder is picked up by
 /// the next sweep. 50 pages × 1000 blocks ≈ 14 h of chain at 1 BPS.
 pub const DEFAULT_MAX_PAGES_PER_SWEEP: u64 = 50;
 
-/// Extra DAA depth (beyond consensus coinbase maturity) a block must have
-/// before the scanner ingests it. Defence-in-depth against DAA-vs-depth
-/// skew: everything returned must already pass the tracker's `is_mature`
-/// gate, or it would be skipped *and* lost behind the cursor.
+/// Extra DAA depth a block must have beyond consensus coinbase maturity.
+///
+/// This is defence-in-depth against DAA-vs-depth skew: everything returned
+/// must already pass the tracker's `is_mature` gate, or it would be skipped
+/// *and* lost behind the cursor.
 pub const DEFAULT_MATURITY_SAFETY_DAA: u64 = 50;
 
 /// [`KaspadClient`] for shielded-coinbase (ZKas) chains.
@@ -217,9 +220,12 @@ pub fn extract_treasury_rewards(
                     // than wrap.
                     continue;
                 };
+                let Ok(index) = u32::try_from(index) else {
+                    continue;
+                };
                 rewards.push(CoinbaseUtxo {
                     transaction_id: b.coinbase_txid.as_bytes(),
-                    index: index as u32,
+                    index,
                     amount_sompi: amount as u64,
                     block_daa_score: b.daa_score,
                 });
@@ -254,13 +260,12 @@ impl KaspadClient for ShieldedRewardScanner {
         let virtual_daa_score = self.get_virtual_daa_score().await?;
         let safe_daa = self.safe_ingest_daa(virtual_daa_score);
 
-        let mut cursor = match self.load_cursor().await? {
-            Some(h) => h,
-            None => {
-                let pp = self.pruning_point().await?;
-                info!(cursor = %pp, "shielded scan: no cursor; starting from pruning point");
-                pp
-            }
+        let mut cursor = if let Some(hash) = self.load_cursor().await? {
+            hash
+        } else {
+            let pruning_point = self.pruning_point().await?;
+            info!(cursor = %pruning_point, "shielded scan: no cursor; starting from pruning point");
+            pruning_point
         };
 
         let mut all_rewards = Vec::new();
@@ -342,7 +347,7 @@ mod tests {
                     value,
                 })
                 .collect(),
-            accepted_bundles: vec![],
+            accepted_txids: vec![],
         }
     }
 

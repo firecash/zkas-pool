@@ -12,3 +12,6 @@ cognitive-complexity-threshold = 25
 
 # Names disallowed in identifiers (anti-typo guards).
 disallowed-names = ["foo", "bar", "baz", "qux", "fizz", "buzz", "tmp", "temp"]
+
+# Project brand name; prose should not need code formatting around it.
+doc-valid-idents = ["ZKas"]
