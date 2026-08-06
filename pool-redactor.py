@@ -308,7 +308,10 @@ def sample():
     text = ""
     for p in INSTANCE_PORTS:
         try:
-            text += urllib.request.urlopen(f"http://127.0.0.1:{p}/metrics", timeout=6).read().decode() + "\n"
+            # Large long-running pools can expose tens of megabytes of
+            # per-session metrics. Keep the timeout above observed generation
+            # time so a healthy bridge is not rendered as an empty pool.
+            text += urllib.request.urlopen(f"http://127.0.0.1:{p}/metrics", timeout=15).read().decode() + "\n"
         except Exception:
             continue
     if not text:
@@ -334,7 +337,7 @@ def sample():
     bridge_by_key = {}
     bridge_total_blocks = None   # bridge's central cumulative pool-block count
     try:
-        braw = urllib.request.urlopen("http://127.0.0.1:3033/api/stats", timeout=5).read().decode()
+        braw = urllib.request.urlopen("http://127.0.0.1:3033/api/stats", timeout=15).read().decode()
         bjson = json.loads(braw)
         # Central pool-block total from the bridge — monotonic within a bridge
         # session (unlike the sum of per-worker Prometheus series, which drops when
