@@ -877,6 +877,7 @@ async fn main() -> Result<()> {
         pow2_clamp: true,
         coinbase_tag_suffix: None,
         proxy_protocol: cfg.proxy_protocol,
+        kaspa_common_protocol: false,
     };
     if cfg.stratum_ports.is_empty() {
         info!(port = %cfg.stratum_port, "stratum: single-port mode");
@@ -1870,6 +1871,9 @@ fn resolve_network(pool_addresses: &[Address], network_override: Option<String>)
             Prefix::Testnet => "testnet-10".to_owned(),
             Prefix::Devnet => "devnet".to_owned(),
             Prefix::Simnet => "simnet".to_owned(),
+            Prefix::KaspaMainnet => {
+                anyhow::bail!("a Kaspa parent-chain address cannot be used as a ZKas pool address")
+            }
         }
     };
     if !accountant::VALID_NETWORKS.contains(&resolved.as_str()) {
