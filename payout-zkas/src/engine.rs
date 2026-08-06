@@ -112,7 +112,7 @@ pub enum EngineError {
     /// Chain read failure.
     #[error(transparent)]
     Chain(#[from] ChainError),
-    /// A consensus DAA score cannot be represented by PostgreSQL `BIGINT`.
+    /// A consensus DAA score cannot be represented by `PostgreSQL` `BIGINT`.
     #[error("DAA score {0} exceeds the database range")]
     DaaOutOfRange(u64),
     /// `cycle_span_daa` too small to confirm in-window.
