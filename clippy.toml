@@ -14,4 +14,4 @@ cognitive-complexity-threshold = 25
 disallowed-names = ["foo", "bar", "baz", "qux", "fizz", "buzz", "tmp", "temp"]
 
 # Project brand name; prose should not need code formatting around it.
-doc-valid-idents = ["ZKas"]
+doc-valid-idents = ["ZKas", ".."]

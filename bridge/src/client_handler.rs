@@ -1,7 +1,7 @@
 use crate::{
     hasher::{calculate_target, generate_iceriver_job_params, generate_job_header, generate_large_job_params, serialize_block_header},
     jsonrpc_event::JsonRpcEvent,
-    mining_state::{GetMiningState, Job, MiningState},
+    mining_state::{GetMiningState, Job},
     prom::*,
     share_handler::{KaspaApiTrait, ShareHandler},
     stratum_context::StratumContext,

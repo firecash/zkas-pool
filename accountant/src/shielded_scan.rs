@@ -347,7 +347,9 @@ mod tests {
                     value,
                 })
                 .collect(),
+            accepted_actions: vec![],
             accepted_txids: vec![],
+            timestamp: 0,
         }
     }
 
