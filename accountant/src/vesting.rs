@@ -77,12 +77,22 @@ impl VestedSplit {
 pub fn vest_reward(gross_sompi: i64, age: Duration) -> VestedSplit {
     assert!(gross_sompi >= 0, "gross reward must be non-negative");
     let matured = age >= VESTING_CLIFF;
-    let applied_bps = if matured { FULL_PAYOUT_BPS } else { EARLY_PAYOUT_BPS };
+    let applied_bps = if matured {
+        FULL_PAYOUT_BPS
+    } else {
+        EARLY_PAYOUT_BPS
+    };
     // floor(gross * bps / 10_000); i128 avoids overflow for any i64 gross.
     let miner_sompi =
         (i128::from(gross_sompi) * i128::from(applied_bps) / i128::from(FULL_PAYOUT_BPS)) as i64;
     let forfeit_sompi = gross_sompi - miner_sompi;
-    VestedSplit { gross_sompi, miner_sompi, forfeit_sompi, applied_bps, matured }
+    VestedSplit {
+        gross_sompi,
+        miner_sompi,
+        forfeit_sompi,
+        applied_bps,
+        matured,
+    }
 }
 
 /// Totals over a set of rewards claimed together.

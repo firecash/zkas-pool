@@ -25,7 +25,7 @@
 
 use std::time::Duration;
 
-use crate::vesting::{vest_claim, vest_reward, ClaimTotals, VestedSplit, VESTING_CLIFF};
+use crate::vesting::{ClaimTotals, VESTING_CLIFF, VestedSplit, vest_claim, vest_reward};
 
 /// What is moving a payout: an automatic maturity sweep, or a miner-initiated
 /// early claim.

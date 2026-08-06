@@ -384,10 +384,10 @@ def sample():
         # Fallback hashrate = Δ(share-difficulty) · 2^32 / Δt over the rolling window.
         hr_ghs = 0.0
         if len(dq) >= 2:
-            ot, od = dq[0]
-            dt = now - ot
-            if dt > 0 and cur >= od:
-                hr_ghs = (cur - od) * TWO32 / dt / 1e9
+            old_time, old_diff = dq[0]
+            dt = now - old_time
+            if dt > 0 and cur >= old_diff:
+                hr_ghs = (cur - old_diff) * TWO32 / dt / 1e9
         b = bridge_by_key.get(k)
         hr_final = b["hr"] if (b and b["hr"] > 0) else hr_ghs   # prefer bridge, session-aware
         workers.append({

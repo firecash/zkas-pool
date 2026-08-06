@@ -247,8 +247,8 @@ use tracing::{error, info, warn};
 
 use accountant::{
     AllocationEngine, ConsumerConfig, EventConsumer, FeeConfig, GeoIp, KaspadGrpcClient,
-    KasplexConfig, KasplexTierClassifier, MaturityConfig, MaturityTracker,
-    ShieldedRewardScanner, StaticTierClassifier, TierClassifier,
+    KasplexConfig, KasplexTierClassifier, MaturityConfig, MaturityTracker, ShieldedRewardScanner,
+    StaticTierClassifier, TierClassifier,
 };
 
 // The runtime orchestrator is intentionally long-form: every step
@@ -686,7 +686,9 @@ async fn main() -> Result<()> {
     let zkas_payout_handle = if zkas_payout_enabled {
         let env_u64 = |key: &str, default: u64| -> Result<u64> {
             match std::env::var(key) {
-                Ok(v) => v.parse::<u64>().with_context(|| format!("{key}={v}: not a u64")),
+                Ok(v) => v
+                    .parse::<u64>()
+                    .with_context(|| format!("{key}={v}: not a u64")),
                 Err(_) => Ok(default),
             }
         };
@@ -705,7 +707,10 @@ async fn main() -> Result<()> {
         )?)
         .context("KATPOOL_ZKAS_THRESHOLD_SOMPI out of range")?;
         let spend_cap_sompi = match std::env::var("KATPOOL_ZKAS_SPEND_CAP_SOMPI") {
-            Ok(v) => Some(v.parse::<i64>().with_context(|| format!("KATPOOL_ZKAS_SPEND_CAP_SOMPI={v}"))?),
+            Ok(v) => Some(
+                v.parse::<i64>()
+                    .with_context(|| format!("KATPOOL_ZKAS_SPEND_CAP_SOMPI={v}"))?,
+            ),
             Err(_) => None,
         };
         let max_sends_per_tick = usize::try_from(env_u64("KATPOOL_ZKAS_MAX_SENDS_PER_TICK", 3)?)
@@ -715,9 +720,15 @@ async fn main() -> Result<()> {
             payout_zkas::DEFAULT_PER_WALLET_CAP_SOMPI as u64,
         )?)
         .context("KATPOOL_ZKAS_MAX_PER_WALLET_SOMPI out of range")?;
-        let fee_sompi = env_u64("KATPOOL_ZKAS_PAYOUT_FEE_SOMPI", payout_zkas::DEFAULT_PAYOUT_FEE_SOMPI)?;
+        let fee_sompi = env_u64(
+            "KATPOOL_ZKAS_PAYOUT_FEE_SOMPI",
+            payout_zkas::DEFAULT_PAYOUT_FEE_SOMPI,
+        )?;
         let anchor_depth = match std::env::var("KATPOOL_ZKAS_ANCHOR_DEPTH") {
-            Ok(v) => Some(v.parse::<u64>().with_context(|| format!("KATPOOL_ZKAS_ANCHOR_DEPTH={v}"))?),
+            Ok(v) => Some(
+                v.parse::<u64>()
+                    .with_context(|| format!("KATPOOL_ZKAS_ANCHOR_DEPTH={v}"))?,
+            ),
             Err(_) => None,
         };
 

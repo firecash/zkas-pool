@@ -164,9 +164,9 @@ impl ShieldedRewardScanner {
             .map_err(|e| KaspadError::Transport(format!("cursor read: {e}")))?;
         match row {
             None => Ok(None),
-            Some(entry) => KaspaHash::from_str(&entry.value)
-                .map(Some)
-                .map_err(|e| KaspadError::Malformed(format!("stored cursor `{}`: {e}", entry.value))),
+            Some(entry) => KaspaHash::from_str(&entry.value).map(Some).map_err(|e| {
+                KaspadError::Malformed(format!("stored cursor `{}`: {e}", entry.value))
+            }),
         }
     }
 
@@ -236,7 +236,10 @@ impl KaspadClient for ShieldedRewardScanner {
         self.colour.get_virtual_daa_score().await
     }
 
-    async fn get_block_color(&self, hash: katpool_domain::BlockHash) -> Result<BlockColor, KaspadError> {
+    async fn get_block_color(
+        &self,
+        hash: katpool_domain::BlockHash,
+    ) -> Result<BlockColor, KaspadError> {
         self.colour.get_block_color(hash).await
     }
 
@@ -291,11 +294,7 @@ impl KaspadClient for ShieldedRewardScanner {
                     cursor = h;
                     // If the page was cut short by the maturity hold-back,
                     // the rest isn't ingestible yet — stop for this sweep.
-                    if resp
-                        .blocks
-                        .last()
-                        .is_some_and(|b| b.daa_score > safe_daa)
-                    {
+                    if resp.blocks.last().is_some_and(|b| b.daa_score > safe_daa) {
                         break;
                     }
                 }
@@ -317,7 +316,12 @@ impl KaspadClient for ShieldedRewardScanner {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )]
     use kaspa_rpc_core::model::message::RpcShieldedCoinbaseOutput;
 
     use super::*;
@@ -325,11 +329,7 @@ mod tests {
     const TREASURY: [u8; 43] = [7u8; 43];
     const OTHER: [u8; 43] = [9u8; 43];
 
-    fn block(
-        tag: u8,
-        daa: u64,
-        outputs: Vec<(&[u8], u64)>,
-    ) -> RpcShieldedChainBlock {
+    fn block(tag: u8, daa: u64, outputs: Vec<(&[u8], u64)>) -> RpcShieldedChainBlock {
         RpcShieldedChainBlock {
             hash: KaspaHash::from_bytes([tag; 32]),
             blue_score: daa,
@@ -352,7 +352,11 @@ mod tests {
 
     #[test]
     fn matches_only_treasury_outputs() {
-        let blocks = vec![block(1, 100, vec![(&OTHER, 50), (&TREASURY, 60), (&TREASURY, 7)])];
+        let blocks = vec![block(
+            1,
+            100,
+            vec![(&OTHER, 50), (&TREASURY, 60), (&TREASURY, 7)],
+        )];
         let (rewards, last) = extract_treasury_rewards(&blocks, &recipients(), 1_000);
         assert_eq!(rewards.len(), 2);
         assert_eq!(rewards[0].amount_sompi, 60);
@@ -399,6 +403,9 @@ mod tests {
     fn maps_txid_bytes_onto_outpoint() {
         let blocks = vec![block(4, 100, vec![(&TREASURY, 10)])];
         let (rewards, _) = extract_treasury_rewards(&blocks, &recipients(), 500);
-        assert_eq!(rewards[0].transaction_id, blocks[0].coinbase_txid.as_bytes());
+        assert_eq!(
+            rewards[0].transaction_id,
+            blocks[0].coinbase_txid.as_bytes()
+        );
     }
 }

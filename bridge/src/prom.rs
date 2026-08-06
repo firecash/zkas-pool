@@ -685,15 +685,10 @@ pub fn record_block_accepted_by_node(worker: &WorkerContext) {
     }
 }
 
-pub fn record_merged_parent_submit(
-    worker: &WorkerContext,
-    outcome: &crate::kaspaapi::MergedParentSubmitOutcome,
-    claimed_zkas: bool,
-) {
+pub fn record_merged_parent_submit(worker: &WorkerContext, outcome: &crate::kaspaapi::MergedParentSubmitOutcome, claimed_zkas: bool) {
     if matches!(
         outcome,
-        crate::kaspaapi::MergedParentSubmitOutcome::NotMerged
-            | crate::kaspaapi::MergedParentSubmitOutcome::DoesNotClearKaspa
+        crate::kaspaapi::MergedParentSubmitOutcome::NotMerged | crate::kaspaapi::MergedParentSubmitOutcome::DoesNotClearKaspa
     ) {
         return;
     }

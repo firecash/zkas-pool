@@ -46,8 +46,7 @@ static GLOBAL_NEXT_EXTRANONCE: AtomicI32 = AtomicI32::new(0);
 
 fn parent_job_interval(remote_app: &str) -> Duration {
     let app = remote_app.to_ascii_lowercase();
-    let legacy_asic =
-        app.contains("godminer") || app.contains("bitmain") || app.contains("antminer") || app.contains("goldshell");
+    let legacy_asic = app.contains("godminer") || app.contains("bitmain") || app.contains("antminer") || app.contains("goldshell");
     let (name, default_ms) =
         if legacy_asic { ("ZKAS_LEGACY_PARENT_JOB_INTERVAL_MS", 1_000) } else { ("ZKAS_COMMON_PARENT_JOB_INTERVAL_MS", 500) };
     let milliseconds = std::env::var(name).ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or(default_ms).clamp(100, 10_000);
@@ -99,11 +98,7 @@ impl ClientHandler {
                 };
                 warn!(
                     "[NO_JOB_TIMEOUT] authorized worker received no mining.notify within 30s; requesting per-connection failover: wallet={} worker={} app={} port={} remote={}",
-                    summary.wallet_addr,
-                    summary.worker_name,
-                    summary.remote_app,
-                    client.local_port,
-                    summary.remote_addr
+                    summary.wallet_addr, summary.worker_name, summary.remote_app, client.local_port, summary.remote_addr
                 );
                 if let Some((host, port)) = next {
                     let _ = client.send_reconnect_hint(host, port, 3).await;
@@ -192,10 +187,8 @@ impl ClientHandler {
         // Preserve the July 23 MRR wire format on the Common-protocol port.
         // Some rental proxies distinguish 8192.0 from the integer form used by
         // direct Bitmain firmware.
-        let value = serde_json::Value::Number(
-            serde_json::Number::from_f64(diff)
-                .unwrap_or_else(|| serde_json::Number::from(diff as u64)),
-        );
+        let value =
+            serde_json::Value::Number(serde_json::Number::from_f64(diff).unwrap_or_else(|| serde_json::Number::from(diff as u64)));
         client
             .send_v1_notification("mining.set_difficulty", vec![value])
             .await

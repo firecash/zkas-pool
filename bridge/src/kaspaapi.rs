@@ -415,12 +415,8 @@ impl KaspaApi {
         }
         let configured_kaspa_node = configured_kaspa_node.unwrap_or_default();
         let configured_kaspa_pay = configured_kaspa_pay.unwrap_or_default();
-        let node = std::env::var("ZKAS_KASPA_NODE")
-            .or_else(|_| std::env::var("FIRECASH_KASPA_NODE"))
-            .unwrap_or(configured_kaspa_node);
-        let pay = std::env::var("ZKAS_KASPA_PAY")
-            .or_else(|_| std::env::var("FIRECASH_KASPA_PAY"))
-            .unwrap_or(configured_kaspa_pay);
+        let node = std::env::var("ZKAS_KASPA_NODE").or_else(|_| std::env::var("FIRECASH_KASPA_NODE")).unwrap_or(configured_kaspa_node);
+        let pay = std::env::var("ZKAS_KASPA_PAY").or_else(|_| std::env::var("FIRECASH_KASPA_PAY")).unwrap_or(configured_kaspa_pay);
         let merged_mining = std::env::var("ZKAS_MERGED_MINING")
             .or_else(|_| std::env::var("FIRECASH_MERGED_MINING"))
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -1466,10 +1462,7 @@ impl KaspaApi {
 
 #[async_trait::async_trait]
 impl KaspaApiTrait for KaspaApi {
-    async fn submit_merged_parent_if_solved(
-        &self,
-        parent: &Block,
-    ) -> crate::kaspaapi::MergedParentSubmitOutcome {
+    async fn submit_merged_parent_if_solved(&self, parent: &Block) -> crate::kaspaapi::MergedParentSubmitOutcome {
         KaspaApi::submit_merged_parent_if_solved(self, parent).await
     }
 

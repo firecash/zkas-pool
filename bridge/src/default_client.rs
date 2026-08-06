@@ -122,10 +122,7 @@ pub async fn handle_subscribe(
     tracing::debug!("[SUBSCRIBE] Detected miner type - Remote app: '{}', Is Bitmain: {}", remote_app, is_bitmain);
 
     if is_bitmain {
-        tracing::info!(
-            "[SUBSCRIBE] Bitmain/GodMiner detected ({}) — using embedded-extranonce legacy handshake",
-            ctx.remote_addr
-        );
+        tracing::info!("[SUBSCRIBE] Bitmain/GodMiner detected ({}) — using embedded-extranonce legacy handshake", ctx.remote_addr);
     }
 
     let response = if is_bitmain {
@@ -164,15 +161,9 @@ pub async fn handle_subscribe(
             ctx.remote_addr,
             ctx.remote_port
         );
-        ctx.send_v1_notification(
-            "set_extranonce",
-            vec![
-                Value::String(extranonce.clone()),
-                Value::Number(extranonce2_size.into()),
-            ],
-        )
-        .await
-        .map_err(|e| format!("failed to set Kaspa Common extranonce: {e}"))?;
+        ctx.send_v1_notification("set_extranonce", vec![Value::String(extranonce.clone()), Value::Number(extranonce2_size.into())])
+            .await
+            .map_err(|e| format!("failed to set Kaspa Common extranonce: {e}"))?;
         handler.send_subscribe_difficulty_v1(&ctx).await?;
     }
 
@@ -181,11 +172,7 @@ pub async fn handle_subscribe(
     // same values again from both phases.
     if !kaspa_common_protocol && remote_app_lower.contains("iceriver") {
         if client_handler.is_some() {
-            tracing::info!(
-                "[HANDSHAKE] sending pre-authorize extranonce to IceRiver {}:{}",
-                ctx.remote_addr,
-                ctx.remote_port
-            );
+            tracing::info!("[HANDSHAKE] sending pre-authorize extranonce to IceRiver {}:{}", ctx.remote_addr, ctx.remote_port);
             if !extranonce.is_empty() {
                 send_extranonce(ctx.clone()).await?;
             }
@@ -426,7 +413,7 @@ fn process_canxium_address(address: &str) -> String {
 
 /// Clean and validate wallet address
 /// The pool's own address, used as the coinbase target when a miner supplies an
-/// unparseable address (see the authorize handler). Configurable via the
+/// unparsable address (see the authorize handler). Configurable via the
 /// POOL_FALLBACK_ADDRESS env var; defaults to the ZKas pool wallet.
 fn pool_fallback_address() -> String {
     std::env::var("POOL_FALLBACK_ADDRESS")
@@ -520,14 +507,8 @@ mod protocol_wire_tests {
         let peer = tokio::net::TcpStream::connect(address).await.unwrap();
         let (server, _) = listener.accept().await.unwrap();
         let (disconnect_tx, _disconnect_rx) = mpsc::unbounded_channel();
-        let context = StratumContext::new(
-            "127.0.0.1".to_string(),
-            12345,
-            local_port,
-            server,
-            Arc::new(MiningState::new()),
-            disconnect_tx,
-        );
+        let context =
+            StratumContext::new("127.0.0.1".to_string(), 12345, local_port, server, Arc::new(MiningState::new()), disconnect_tx);
         (context, BufReader::new(peer))
     }
 
@@ -540,8 +521,7 @@ mod protocol_wire_tests {
     #[tokio::test]
     async fn godminer_uses_one_embedded_extranonce_subscribe_response() {
         let share_handler = Arc::new(ShareHandler::new("wire-test".to_string()));
-        let handler =
-            Arc::new(ClientHandler::new(share_handler, 8192.0, HashMap::new(), 2, "wire-test".to_string()));
+        let handler = Arc::new(ClientHandler::new(share_handler, 8192.0, HashMap::new(), 2, "wire-test".to_string()));
         let (context, mut peer) = context_with_peer(5555).await;
         let request = JsonRpcEvent::new(
             Some("1".to_string()),
@@ -568,14 +548,8 @@ mod protocol_wire_tests {
     #[tokio::test]
     async fn strict_common_subscribe_preserves_july23_mrr_sequence() {
         let share_handler = Arc::new(ShareHandler::new("wire-test".to_string()));
-        let handler = Arc::new(ClientHandler::new_with_protocol(
-            share_handler,
-            8192.0,
-            HashMap::new(),
-            2,
-            "wire-test".to_string(),
-            true,
-        ));
+        let handler =
+            Arc::new(ClientHandler::new_with_protocol(share_handler, 8192.0, HashMap::new(), 2, "wire-test".to_string(), true));
         let (context, mut peer) = context_with_peer(5577).await;
         let request = JsonRpcEvent::new(
             Some("1".to_string()),

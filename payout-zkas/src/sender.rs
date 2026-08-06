@@ -248,9 +248,18 @@ mod tests {
     #[test]
     fn ambiguity_classification() {
         assert!(SendError::TimedOut { seconds: 1 }.is_ambiguous());
-        assert!(SendError::NoTxid { stdout_tail: String::new() }.is_ambiguous());
         assert!(
-            !SendError::Failed { code: Some(1), stderr_tail: String::new() }.is_ambiguous()
+            SendError::NoTxid {
+                stdout_tail: String::new()
+            }
+            .is_ambiguous()
+        );
+        assert!(
+            !SendError::Failed {
+                code: Some(1),
+                stderr_tail: String::new()
+            }
+            .is_ambiguous()
         );
         assert!(!SendError::Seed("x".into()).is_ambiguous());
     }

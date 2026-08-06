@@ -73,7 +73,10 @@ impl ChallengeStore {
     /// Create a store with the given challenge lifetime.
     #[must_use]
     pub fn new(ttl: Duration) -> Self {
-        Self { ttl, pending: Mutex::new(HashMap::new()) }
+        Self {
+            ttl,
+            pending: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Challenge lifetime.
@@ -87,7 +90,13 @@ impl ChallengeStore {
     /// (production passes `Instant::now()` and a CSPRNG-filled array).
     pub fn issue_at(&self, address: &[u8], nonce: Challenge, now: Instant) -> Challenge {
         let mut map = self.pending.lock().expect("challenge mutex poisoned");
-        map.insert(address.to_vec(), Pending { challenge: nonce, expires_at: now + self.ttl });
+        map.insert(
+            address.to_vec(),
+            Pending {
+                challenge: nonce,
+                expires_at: now + self.ttl,
+            },
+        );
         nonce
     }
 
@@ -170,7 +179,10 @@ mod tests {
         let store = ChallengeStore::new(Duration::from_secs(300));
         let t0 = Instant::now();
         let ch = store.issue_at(ADDR, nonce(1), t0);
-        let v = StubVerifier { ok_challenge: ch, ok_sig: b"goodsig".to_vec() };
+        let v = StubVerifier {
+            ok_challenge: ch,
+            ok_sig: b"goodsig".to_vec(),
+        };
         let out = store.redeem_at(ADDR, FVK, b"goodsig", &v, t0 + Duration::from_secs(10));
         assert_eq!(out, Ok(ch));
         assert!(store.is_empty(), "challenge consumed on success");
@@ -179,7 +191,10 @@ mod tests {
     #[test]
     fn redeem_without_challenge_fails() {
         let store = ChallengeStore::default();
-        let v = StubVerifier { ok_challenge: nonce(1), ok_sig: b"x".to_vec() };
+        let v = StubVerifier {
+            ok_challenge: nonce(1),
+            ok_sig: b"x".to_vec(),
+        };
         assert_eq!(
             store.redeem_at(ADDR, FVK, b"x", &v, Instant::now()),
             Err(ClaimError::NoChallenge)
@@ -191,9 +206,15 @@ mod tests {
         let store = ChallengeStore::default();
         let t0 = Instant::now();
         let ch = store.issue_at(ADDR, nonce(2), t0);
-        let v = StubVerifier { ok_challenge: ch, ok_sig: b"goodsig".to_vec() };
+        let v = StubVerifier {
+            ok_challenge: ch,
+            ok_sig: b"goodsig".to_vec(),
+        };
         // Wrong signature: rejected AND consumed (no replay of a captured attempt).
-        assert_eq!(store.redeem_at(ADDR, FVK, b"WRONG", &v, t0), Err(ClaimError::BadSignature));
+        assert_eq!(
+            store.redeem_at(ADDR, FVK, b"WRONG", &v, t0),
+            Err(ClaimError::BadSignature)
+        );
         assert!(store.is_empty());
         // A replay of even the correct signature now finds no challenge.
         assert_eq!(
@@ -207,7 +228,10 @@ mod tests {
         let store = ChallengeStore::new(Duration::from_secs(60));
         let t0 = Instant::now();
         let ch = store.issue_at(ADDR, nonce(3), t0);
-        let v = StubVerifier { ok_challenge: ch, ok_sig: b"goodsig".to_vec() };
+        let v = StubVerifier {
+            ok_challenge: ch,
+            ok_sig: b"goodsig".to_vec(),
+        };
         // At exactly ttl the challenge is expired (>= boundary).
         assert_eq!(
             store.redeem_at(ADDR, FVK, b"goodsig", &v, t0 + Duration::from_secs(60)),
@@ -221,15 +245,24 @@ mod tests {
         let t0 = Instant::now();
         store.issue_at(ADDR, nonce(4), t0);
         let fresh = store.issue_at(ADDR, nonce(5), t0);
-        let v = StubVerifier { ok_challenge: nonce(4), ok_sig: b"s".to_vec() };
+        let v = StubVerifier {
+            ok_challenge: nonce(4),
+            ok_sig: b"s".to_vec(),
+        };
         // The stale nonce(4) can't be redeemed; only the fresh one is live.
-        assert_eq!(store.redeem_at(ADDR, FVK, b"s", &v, t0), Err(ClaimError::BadSignature));
+        assert_eq!(
+            store.redeem_at(ADDR, FVK, b"s", &v, t0),
+            Err(ClaimError::BadSignature)
+        );
         assert_eq!(store.len(), 0);
         // Prove the fresh one was the live challenge.
         let store2 = ChallengeStore::default();
         store2.issue_at(ADDR, nonce(4), t0);
         store2.issue_at(ADDR, fresh, t0);
-        let v2 = StubVerifier { ok_challenge: fresh, ok_sig: b"s".to_vec() };
+        let v2 = StubVerifier {
+            ok_challenge: fresh,
+            ok_sig: b"s".to_vec(),
+        };
         assert_eq!(store2.redeem_at(ADDR, FVK, b"s", &v2, t0), Ok(fresh));
     }
 
@@ -249,9 +282,15 @@ mod tests {
         let t0 = Instant::now();
         let cha = store.issue_at(b"addr-a", nonce(1), t0);
         store.issue_at(b"addr-b", nonce(2), t0);
-        let v = StubVerifier { ok_challenge: cha, ok_sig: b"s".to_vec() };
+        let v = StubVerifier {
+            ok_challenge: cha,
+            ok_sig: b"s".to_vec(),
+        };
         // A's challenge does not authorize B.
-        assert_eq!(store.redeem_at(b"addr-b", FVK, b"s", &v, t0), Err(ClaimError::BadSignature));
+        assert_eq!(
+            store.redeem_at(b"addr-b", FVK, b"s", &v, t0),
+            Err(ClaimError::BadSignature)
+        );
         // A still redeems with its own challenge.
         assert_eq!(store.redeem_at(b"addr-a", FVK, b"s", &v, t0), Ok(cha));
     }

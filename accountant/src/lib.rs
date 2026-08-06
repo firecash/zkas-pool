@@ -79,13 +79,6 @@ pub use config::{
 };
 pub use consumer::{ConsumerConfig, ConsumerConfigError, EventConsumer, VALID_NETWORKS};
 pub use error::{AccountantError, EventError};
-pub use payout::{
-    has_auto_payable, plan_payout, time_until_auto_payout, PayoutPlan, PayoutTrigger,
-};
-pub use vesting::{
-    ClaimTotals, EARLY_PAYOUT_BPS, FULL_PAYOUT_BPS, ForfeitPolicy, VESTING_CLIFF,
-    VESTING_CLIFF_DAYS, VestedSplit, vest_claim, vest_reward,
-};
 pub use geoip::{GeoIp, GeoIpError};
 pub use kaspad_grpc::{KaspadGrpcClient, coinbase_utxos_from_entries};
 pub use maturity::{
@@ -93,18 +86,25 @@ pub use maturity::{
     DEFAULT_WINDOW_DAA_SPAN, KaspadClient, KaspadError, MaturityConfig, MaturityTracker,
     SweepStats, TrackerError, is_mature,
 };
+pub use payout::{
+    PayoutPlan, PayoutTrigger, has_auto_payable, plan_payout, time_until_auto_payout,
+};
 pub use replay::{
     DbSnapshot, assert_snapshots_equal, load_ndjson_path, load_ndjson_reader, replay_all, snapshot,
     verify_dual_replay,
 };
 pub use shielded_scan::{
-    DEFAULT_MATURITY_SAFETY_DAA, DEFAULT_PAGE_LIMIT, SHIELDED_SCAN_CURSOR_KEY,
-    ScannerConfigError, ShieldedRewardScanner, extract_treasury_rewards,
+    DEFAULT_MATURITY_SAFETY_DAA, DEFAULT_PAGE_LIMIT, SHIELDED_SCAN_CURSOR_KEY, ScannerConfigError,
+    ShieldedRewardScanner, extract_treasury_rewards,
 };
 pub use tier::{ClassifierError, StaticTierClassifier, TierClassifier};
 pub use tier_kasplex::{
     DEFAULT_ELITE_KRC20_THRESHOLD, DEFAULT_HTTP_TIMEOUT, DEFAULT_KRC20_BASE, DEFAULT_NACHO_TICKER,
     DEFAULT_NFT_BASE, DEFAULT_TTL, KasplexConfig, KasplexTierClassifier,
+};
+pub use vesting::{
+    ClaimTotals, EARLY_PAYOUT_BPS, FULL_PAYOUT_BPS, ForfeitPolicy, VESTING_CLIFF,
+    VESTING_CLIFF_DAYS, VestedSplit, vest_claim, vest_reward,
 };
 pub use window::{CloseOutcome, WindowAggregator};
 

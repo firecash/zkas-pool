@@ -14,8 +14,8 @@ use crate::models::{
     ActiveMinersHistory, ActiveMinersPointView, ActiveSessionsView, BlockCounts, BlockView,
     BlocksPage, CycleDetailPage, CycleRecipientView, CycleView, CyclesPage, FirmwareBreakdown,
     FirmwareEntryView, GeoBreakdown, GeoEntryView, HashrateHistory, HashratePointView,
-    HashrateSnapshot, MiningPoolStats, MpsBlock,
-    PayoutTotals, PoolRejectsResponse, PoolStats, RejectReasonCount, TreasuryView,
+    HashrateSnapshot, MiningPoolStats, MpsBlock, PayoutTotals, PoolRejectsResponse, PoolStats,
+    RejectReasonCount, TreasuryView,
 };
 use crate::money::KasAmount;
 use crate::params::{self, PageParams, RangeParams, WindowParams};

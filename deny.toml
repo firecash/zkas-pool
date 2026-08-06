@@ -179,6 +179,7 @@ unknown-git = "deny"
 # Pinned to a specific tag in workspace.dependencies so the source is
 # reproducible.
 allow-git = [
+    "https://github.com/firecash/zkas-rusty",
     "https://github.com/kaspanet/rusty-kaspa",
     # workflow-perf-monitor is published on crates.io up to v0.0.2, but
     # rusty-kaspa tn10-toc3 pins v0.0.3 which exists only as a git tag on

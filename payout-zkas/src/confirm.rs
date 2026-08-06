@@ -41,7 +41,10 @@ pub struct ConfirmationInputs {
 /// Fold raw chain reads into a [`ConfirmationState`]. Acceptance wins over
 /// a stale mempool read (a tx can be both briefly).
 #[must_use]
-pub const fn classify_confirmation(inputs: ConfirmationInputs, confirmation_daa: u64) -> ConfirmationState {
+pub const fn classify_confirmation(
+    inputs: ConfirmationInputs,
+    confirmation_daa: u64,
+) -> ConfirmationState {
     if let Some(accept) = inputs.accept_daa {
         let depth = inputs.virtual_daa_score.saturating_sub(accept);
         if depth >= confirmation_daa {
@@ -64,7 +67,11 @@ mod tests {
     #[test]
     fn mempool_is_pending() {
         let s = classify_confirmation(
-            ConfirmationInputs { virtual_daa_score: 1_000, in_mempool: true, accept_daa: None },
+            ConfirmationInputs {
+                virtual_daa_score: 1_000,
+                in_mempool: true,
+                accept_daa: None,
+            },
             CONF,
         );
         assert_eq!(s, ConfirmationState::Pending);
@@ -73,7 +80,11 @@ mod tests {
     #[test]
     fn accepted_below_depth() {
         let s = classify_confirmation(
-            ConfirmationInputs { virtual_daa_score: 1_050, in_mempool: false, accept_daa: Some(1_000) },
+            ConfirmationInputs {
+                virtual_daa_score: 1_050,
+                in_mempool: false,
+                accept_daa: Some(1_000),
+            },
             CONF,
         );
         assert_eq!(s, ConfirmationState::Accepted);
@@ -82,7 +93,11 @@ mod tests {
     #[test]
     fn confirmed_at_depth() {
         let s = classify_confirmation(
-            ConfirmationInputs { virtual_daa_score: 1_100, in_mempool: false, accept_daa: Some(1_000) },
+            ConfirmationInputs {
+                virtual_daa_score: 1_100,
+                in_mempool: false,
+                accept_daa: Some(1_000),
+            },
             CONF,
         );
         assert_eq!(s, ConfirmationState::Confirmed);
@@ -91,7 +106,11 @@ mod tests {
     #[test]
     fn acceptance_wins_over_stale_mempool_read() {
         let s = classify_confirmation(
-            ConfirmationInputs { virtual_daa_score: 1_100, in_mempool: true, accept_daa: Some(1_000) },
+            ConfirmationInputs {
+                virtual_daa_score: 1_100,
+                in_mempool: true,
+                accept_daa: Some(1_000),
+            },
             CONF,
         );
         assert_eq!(s, ConfirmationState::Confirmed);
@@ -100,7 +119,11 @@ mod tests {
     #[test]
     fn unobservable_is_unknown_never_failed() {
         let s = classify_confirmation(
-            ConfirmationInputs { virtual_daa_score: 1_000, in_mempool: false, accept_daa: None },
+            ConfirmationInputs {
+                virtual_daa_score: 1_000,
+                in_mempool: false,
+                accept_daa: None,
+            },
             CONF,
         );
         assert_eq!(s, ConfirmationState::Unknown);

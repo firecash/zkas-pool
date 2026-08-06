@@ -906,11 +906,7 @@ impl ShareHandler {
 
                 let (parent_outcome, claimed_zkas) =
                     submit_parent_then_claim_zkas(kaspa_api.as_ref(), &block, &current_job.block).await;
-                crate::prom::record_merged_parent_submit(
-                    &self.worker_prom_context(&ctx, ""),
-                    &parent_outcome,
-                    claimed_zkas,
-                );
+                crate::prom::record_merged_parent_submit(&self.worker_prom_context(&ctx, ""), &parent_outcome, claimed_zkas);
 
                 // In merged mode many distinct parent nonces can prove the same
                 // fixed ZKAS `H_fc`, but that ZKAS block can pay only once.
@@ -2009,10 +2005,7 @@ pub trait KaspaApiTrait: Send + Sync {
     /// Submit the independent Kaspa-parent leg before attempting to claim the
     /// committed ZKAS block. The default keeps non-merged mocks and adapters
     /// source-compatible.
-    async fn submit_merged_parent_if_solved(
-        &self,
-        _parent: &Block,
-    ) -> crate::kaspaapi::MergedParentSubmitOutcome {
+    async fn submit_merged_parent_if_solved(&self, _parent: &Block) -> crate::kaspaapi::MergedParentSubmitOutcome {
         crate::kaspaapi::MergedParentSubmitOutcome::NotMerged
     }
 
@@ -2079,10 +2072,7 @@ mod merged_settlement_order_tests {
             unreachable!("template fetch is outside this regression")
         }
 
-        async fn submit_block(
-            &self,
-            _block: Block,
-        ) -> Result<BlockSubmitOutcome, Box<dyn std::error::Error + Send + Sync>> {
+        async fn submit_block(&self, _block: Block) -> Result<BlockSubmitOutcome, Box<dyn std::error::Error + Send + Sync>> {
             unreachable!("ZKAS submission must not run after a failed claim")
         }
 
@@ -2103,10 +2093,7 @@ mod merged_settlement_order_tests {
             Ok(vec![])
         }
 
-        async fn get_current_block_color(
-            &self,
-            _block_hash: &str,
-        ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        async fn get_current_block_color(&self, _block_hash: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
             Ok(false)
         }
     }
@@ -2120,11 +2107,7 @@ mod merged_settlement_order_tests {
 
         assert_eq!(outcome, MergedParentSubmitOutcome::Accepted);
         assert!(!claimed_zkas, "fixture represents an H_fc already claimed by an earlier nonce");
-        assert_eq!(
-            api.calls.lock().as_slice(),
-            ["parent", "claim"],
-            "Kaspa submission must never be gated behind ZKAS deduplication"
-        );
+        assert_eq!(api.calls.lock().as_slice(), ["parent", "claim"], "Kaspa submission must never be gated behind ZKAS deduplication");
     }
 }
 

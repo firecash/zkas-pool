@@ -49,7 +49,9 @@ use tokio::time;
 use tracing::{error, info, warn};
 
 use crate::chain::{ChainError, ChainReader};
-use crate::confirm::{ConfirmationInputs, ConfirmationState, ZKAS_PAYOUT_CONFIRMATION_DAA, classify_confirmation};
+use crate::confirm::{
+    ConfirmationInputs, ConfirmationState, ZKAS_PAYOUT_CONFIRMATION_DAA, classify_confirmation,
+};
 use crate::plan::{PlanZkasCycleParams, plan_zkas_cycle};
 use crate::sender::ShieldedSender;
 use crate::window::cycle_window;
@@ -163,7 +165,13 @@ impl ZkasPayoutEngine {
             });
         }
         let lock_key = advisory_key(&cfg.lock_namespace);
-        Ok(Self { db, sender, chain, cfg, lock_key })
+        Ok(Self {
+            db,
+            sender,
+            chain,
+            cfg,
+            lock_key,
+        })
     }
 
     /// Run ticks until `shutdown` flips.
@@ -206,7 +214,8 @@ impl ZkasPayoutEngine {
 
         // ---- resume or plan the bucket's cycle -----------------------
         let key = payout::idempotency_key(PayoutKind::Zkas, start, end);
-        let cycle: PayoutCycle = match payout::find_cycle_by_idempotency_key(&self.db, &key).await? {
+        let cycle: PayoutCycle = match payout::find_cycle_by_idempotency_key(&self.db, &key).await?
+        {
             Some(c) => c,
             None => {
                 let plan = plan_zkas_cycle(
@@ -237,10 +246,16 @@ impl ZkasPayoutEngine {
     }
 
     async fn inflight_latch(&self) -> Result<Option<String>, EngineError> {
-        Ok(pool_meta::get(&self.db, INFLIGHT_KEY).await?.map(|e| e.value))
+        Ok(pool_meta::get(&self.db, INFLIGHT_KEY)
+            .await?
+            .map(|e| e.value))
     }
 
-    async fn broadcast_pass(&self, cycle: &PayoutCycle, stats: &mut TickStats) -> Result<(), EngineError> {
+    async fn broadcast_pass(
+        &self,
+        cycle: &PayoutCycle,
+        stats: &mut TickStats,
+    ) -> Result<(), EngineError> {
         if let Some(latched) = self.inflight_latch().await? {
             stats.inflight_latched = true;
             error!(
@@ -254,8 +269,10 @@ impl ZkasPayoutEngine {
         }
 
         let recipients = payout::list_cycle_recipients(&self.db, cycle.id).await?;
-        let planned: Vec<&CycleRecipient> =
-            recipients.iter().filter(|r| r.status == PayoutStatus::Planned).collect();
+        let planned: Vec<&CycleRecipient> = recipients
+            .iter()
+            .filter(|r| r.status == PayoutStatus::Planned)
+            .collect();
         if planned.is_empty() {
             return Ok(());
         }
@@ -290,7 +307,11 @@ impl ZkasPayoutEngine {
             pool_meta::set(&self.db, INFLIGHT_KEY, &r.payout_id.to_string()).await?;
 
             let Ok(amount) = u64::try_from(r.amount_sompi) else {
-                error!(payout_id = r.payout_id, amount = r.amount_sompi, "negative payout amount; skipping");
+                error!(
+                    payout_id = r.payout_id,
+                    amount = r.amount_sompi,
+                    "negative payout amount; skipping"
+                );
                 pool_meta::delete(&self.db, INFLIGHT_KEY).await?;
                 continue;
             };
@@ -337,7 +358,10 @@ impl ZkasPayoutEngine {
     }
 
     async fn ensure_confirm_cursor(&self) -> Result<(), EngineError> {
-        if pool_meta::get(&self.db, CONFIRM_CURSOR_KEY).await?.is_none() {
+        if pool_meta::get(&self.db, CONFIRM_CURSOR_KEY)
+            .await?
+            .is_none()
+        {
             let sink = self.chain.sink().await?;
             pool_meta::set(&self.db, CONFIRM_CURSOR_KEY, &sink.to_string()).await?;
             info!(instance = %self.cfg.instance_id, cursor = %sink, "zkas payout: confirmation cursor anchored at sink");
@@ -345,7 +369,11 @@ impl ZkasPayoutEngine {
         Ok(())
     }
 
-    async fn confirm_pass(&self, virtual_daa: u64, stats: &mut TickStats) -> Result<(), EngineError> {
+    async fn confirm_pass(
+        &self,
+        virtual_daa: u64,
+        stats: &mut TickStats,
+    ) -> Result<(), EngineError> {
         let in_flight = payout::list_zkas_in_flight_payouts(&self.db).await?;
 
         // Advance the acceptance cursor even with nothing in flight, so it
@@ -364,7 +392,11 @@ impl ZkasPayoutEngine {
 
         let watched: HashSet<KaspaHash> = in_flight
             .iter()
-            .filter_map(|p| <[u8; 32]>::try_from(p.tx_hash.as_slice()).ok().map(KaspaHash::from_bytes))
+            .filter_map(|p| {
+                <[u8; 32]>::try_from(p.tx_hash.as_slice())
+                    .ok()
+                    .map(KaspaHash::from_bytes)
+            })
             .collect();
 
         let scan = match self.chain.accepted_since(cursor, &watched).await {
@@ -382,17 +414,27 @@ impl ZkasPayoutEngine {
         };
 
         for p in &in_flight {
-            let Ok(bytes) = <[u8; 32]>::try_from(p.tx_hash.as_slice()) else { continue };
+            let Ok(bytes) = <[u8; 32]>::try_from(p.tx_hash.as_slice()) else {
+                continue;
+            };
             let txid = KaspaHash::from_bytes(bytes);
             let newly_accepted_daa = scan.accepted.get(&txid).copied();
             let recorded = p.accepted_daa_score.and_then(|v| u64::try_from(v).ok());
             let accept_daa = recorded.or(newly_accepted_daa);
 
             // Only pay the mempool probe for rows with no acceptance signal.
-            let in_mempool = if accept_daa.is_none() { self.chain.in_mempool(txid).await? } else { false };
+            let in_mempool = if accept_daa.is_none() {
+                self.chain.in_mempool(txid).await?
+            } else {
+                false
+            };
 
             match classify_confirmation(
-                ConfirmationInputs { virtual_daa_score: virtual_daa, in_mempool, accept_daa },
+                ConfirmationInputs {
+                    virtual_daa_score: virtual_daa,
+                    in_mempool,
+                    accept_daa,
+                },
                 ZKAS_PAYOUT_CONFIRMATION_DAA,
             ) {
                 ConfirmationState::Confirmed => {
@@ -427,8 +469,14 @@ impl ZkasPayoutEngine {
         if rows.is_empty() {
             return Ok(());
         }
-        let confirmed = rows.iter().filter(|p| p.status == PayoutStatus::Confirmed).count();
-        let failed = rows.iter().filter(|p| p.status == PayoutStatus::Failed).count();
+        let confirmed = rows
+            .iter()
+            .filter(|p| p.status == PayoutStatus::Confirmed)
+            .count();
+        let failed = rows
+            .iter()
+            .filter(|p| p.status == PayoutStatus::Failed)
+            .count();
         let in_flight = rows
             .iter()
             .filter(|p| matches!(p.status, PayoutStatus::Submitted | PayoutStatus::Accepted))
@@ -446,14 +494,18 @@ impl ZkasPayoutEngine {
             None // still planned
         };
         match status {
-            Some(PayoutCycleStatus::Settled) => payout::mark_cycle_settled(&self.db, cycle_id).await?,
+            Some(PayoutCycleStatus::Settled) => {
+                payout::mark_cycle_settled(&self.db, cycle_id).await?
+            }
             Some(PayoutCycleStatus::PartiallySettled) => {
                 payout::mark_cycle_partially_settled(&self.db, cycle_id).await?;
             }
             Some(PayoutCycleStatus::Broadcasting) => {
                 payout::mark_cycle_broadcasting(&self.db, cycle_id).await?;
             }
-            Some(PayoutCycleStatus::Failed) => payout::mark_cycle_failed(&self.db, cycle_id).await?,
+            Some(PayoutCycleStatus::Failed) => {
+                payout::mark_cycle_failed(&self.db, cycle_id).await?
+            }
             _ => {}
         }
         Ok(())

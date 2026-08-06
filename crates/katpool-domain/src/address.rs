@@ -1,7 +1,7 @@
 //! [`WalletAddress`] — a validated ZKas/Kaspa wallet address.
 //!
 //! Phase 1 validation is intentionally minimal: parse the prefix
-//! (canonical ZKas `zkas:`-family HRPs, the legacy `firecash:`-family
+//! (canonical `ZKas` `zkas:`-family HRPs, the legacy `firecash:`-family
 //! aliases, or the upstream `kaspa:`/`kaspatest:` forms) and require a
 //! reasonable bech32 body length and character set. Full bech32
 //! verification with the (forked) kaspa-addresses crate happens where
@@ -51,7 +51,7 @@ impl WalletAddress {
     /// just a "definitely garbage" rejection floor.
     pub const MIN_TOTAL_LEN: usize = 13;
 
-    /// Maximum total length we'll consider plausible. A ZKas shielded
+    /// Maximum total length we'll consider plausible. A `ZKas` shielded
     /// (Orchard) address body is ~79 characters, so with the longest legacy
     /// prefix (`firecashtest:`) a real address runs ~92; we cap at 110 to
     /// leave headroom and still bound memory.
@@ -62,10 +62,7 @@ impl WalletAddress {
     /// Returns an [`AddressError`] describing the first failing check.
     pub fn new(s: impl Into<String>) -> Result<Self, AddressError> {
         let s: String = s.into();
-        let Some(body) = ACCEPTED_PREFIXES
-            .iter()
-            .find_map(|p| s.strip_prefix(p))
-        else {
+        let Some(body) = ACCEPTED_PREFIXES.iter().find_map(|p| s.strip_prefix(p)) else {
             return Err(AddressError::InvalidPrefix);
         };
 
