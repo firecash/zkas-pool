@@ -685,12 +685,13 @@ async fn main() -> Result<()> {
         .unwrap_or(false);
     let zkas_payout_handle = if zkas_payout_enabled {
         let env_u64 = |key: &str, default: u64| -> Result<u64> {
-            match std::env::var(key) {
-                Ok(v) => v
-                    .parse::<u64>()
-                    .with_context(|| format!("{key}={v}: not a u64")),
-                Err(_) => Ok(default),
-            }
+            std::env::var(key).map_or_else(
+                |_| Ok(default),
+                |v| {
+                    v.parse::<u64>()
+                        .with_context(|| format!("{key}={v}: not a u64"))
+                },
+            )
         };
         let bin = std::env::var("KATPOOL_SHIELDED_PAY_BIN")
             .context("KATPOOL_ZKAS_PAYOUT_ENABLED=true requires KATPOOL_SHIELDED_PAY_BIN")?;
@@ -869,7 +870,7 @@ async fn main() -> Result<()> {
         log_to_file: false,
         health_check_port: cfg.health_check_port.clone(),
         block_wait_time: Duration::from_millis(500),
-        min_share_diff: cfg.min_share_diff as f64,
+        min_share_diff: f64::from(cfg.min_share_diff),
         var_diff: cfg.var_diff,
         shares_per_min: cfg.shares_per_min,
         var_diff_stats: false,
