@@ -147,6 +147,11 @@ mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
     use super::*;
 
+    #[test]
+    fn consensus_uses_zkas_merge_mining_magic() {
+        assert_eq!(kaspa_consensus_core::auxpow::MERGE_MINE_MAGIC, *b"ZKMM");
+    }
+
     fn coinbase(h_fc: Hash) -> Transaction {
         Transaction::new(0, vec![], vec![], 0, SUBNETWORK_ID_COINBASE, 0, AuxPow::embed_commitment(&[1, 2, 3], h_fc, &[9]))
     }

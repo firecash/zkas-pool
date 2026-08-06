@@ -93,6 +93,15 @@ jobs:
           shared-key: katpool
       - name: cargo test --workspace
         run: cargo test --workspace --locked --no-fail-fast
+      - name: Verify bridge merged-mining magic
+        run: |
+          cargo build --locked --release --bin stratum-bridge
+          binary=target/release/stratum-bridge
+          grep -a -q 'ZKMM' "$binary"
+          if grep -a -q 'FCMM' "$binary"; then
+            echo 'bridge contains obsolete FCMM merged-mining magic' >&2
+            exit 1
+          fi
 
   deny:
     name: deny
