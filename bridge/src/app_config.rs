@@ -256,9 +256,28 @@ impl Default for BridgeConfig {
     }
 }
 
+/// Smallest share difficulty the pool accepts from configuration. Sub-1 values
+/// are legitimate on an easy chain (vardiff drops there on its own), but zero,
+/// negative, NaN and infinity would poison every target comparison downstream —
+/// a zero floor also lets the weakest worker submit an unbounded share flood.
+pub const MIN_SHARE_DIFF_FLOOR: f64 = f64::MIN_POSITIVE;
+/// Largest share difficulty accepted from configuration: beyond 2^53 the f64
+/// can no longer represent whole difficulties exactly.
+pub const MIN_SHARE_DIFF_CEIL: f64 = 9_007_199_254_740_992.0;
+
+/// Reject a configured share-difficulty floor that cannot work.
+pub fn validate_min_share_diff(idx: usize, value: f64) -> Result<(), anyhow::Error> {
+    if !value.is_finite() || value < MIN_SHARE_DIFF_FLOOR || value > MIN_SHARE_DIFF_CEIL {
+        return Err(anyhow::anyhow!(
+            "Instance {} has an unusable min_share_diff {value}: must be finite and between {MIN_SHARE_DIFF_FLOOR} and {MIN_SHARE_DIFF_CEIL}",
+            idx
+        ));
+    }
+    Ok(())
+}
+
 impl BridgeConfig {
-    pub fn from_yaml(content: &str) -> Result<Self, anyhow::Error> {
-        // Deserialize using serde_yaml
+    pub fn from_yaml(content: &str) -> Result<Self, anyhow::Error> {        // Deserialize using serde_yaml
         let raw: BridgeConfigRaw = serde_yaml::from_str(content)?;
 
         // Post-process: Handle single-instance mode
@@ -275,9 +294,7 @@ impl BridgeConfig {
                 if instance.stratum_port.is_empty() {
                     return Err(anyhow::anyhow!("Instance {} missing required 'stratum_port'", idx));
                 }
-                if instance.min_share_diff == 0.0 {
-                    // Note: 0 is technically valid but unlikely, we'll allow it
-                }
+                validate_min_share_diff(idx, instance.min_share_diff)?;
             }
 
             instances
@@ -290,6 +307,7 @@ impl BridgeConfig {
             if let Some(min_share_diff) = raw.min_share_diff {
                 instance.min_share_diff = min_share_diff;
             }
+            validate_min_share_diff(0, instance.min_share_diff)?;
 
             vec![instance]
         };

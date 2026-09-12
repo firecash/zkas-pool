@@ -55,7 +55,9 @@ pub(crate) fn parse_instance_spec(spec: &str, default_min_share_diff: Option<f64
                 instance.prom_port = if normalized.is_empty() { None } else { Some(normalized) };
             }
             "diff" | "min_share_diff" => {
-                instance.min_share_diff = v.parse::<f64>().map_err(|e| anyhow::anyhow!("invalid min_share_diff '{v}': {e}"))?;
+                let parsed = v.parse::<f64>().map_err(|e| anyhow::anyhow!("invalid min_share_diff '{v}': {e}"))?;
+                crate::app_config::validate_min_share_diff(0, parsed)?;
+                instance.min_share_diff = parsed;
                 has_diff = true;
             }
             "wait" | "block_wait_time" => {
@@ -99,6 +101,7 @@ pub(crate) fn parse_instance_spec(spec: &str, default_min_share_diff: Option<f64
             ));
         }
     }
+    crate::app_config::validate_min_share_diff(0, instance.min_share_diff)?;
 
     Ok(instance)
 }
@@ -334,6 +337,12 @@ pub fn apply_cli_overrides(config: &mut BridgeConfig, cli: &Cli) -> Result<(), a
         if let Some(v) = cli.instance_pow2_clamp {
             instance.pow2_clamp = Some(v);
         }
+    }
+
+    // CLI overrides bypass the YAML validation, so re-check every floor here:
+    // a NaN or negative --min-share-diff must fail startup, not poison vardiff.
+    for (idx, instance) in config.instances.iter().enumerate() {
+        crate::app_config::validate_min_share_diff(idx, instance.min_share_diff)?;
     }
 
     Ok(())

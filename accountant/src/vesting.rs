@@ -27,9 +27,14 @@ pub const FULL_PAYOUT_BPS: u32 = 10_000;
 
 /// Where the withheld portion of an early claim goes.
 ///
-/// The pool captures the forfeited half on an early claim; this selects its
-/// destination. Only [`Treasury`](Self::Treasury) is wired in the payout engine
-/// today — the others are recorded for the accounting audit trail.
+/// REVIEWED DEFAULT: [`Treasury`](Self::Treasury) is the default AND the only
+/// behavior wired into the payout engine — an early claim always routes the
+/// withheld half to the operator treasury, and `ClaimTotals.forfeit_sompi`
+/// records exactly that. [`Redistribute`](Self::Redistribute) and
+/// [`Burn`](Self::Burn) are named here so a future policy change is explicit,
+/// but selecting either today MUST fail loudly at the call site instead of
+/// silently paying the treasury. Do not add a new policy without wiring it
+/// through `accountant::payout` and its tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ForfeitPolicy {
     /// Forfeited sompi accrues to the pool operator treasury. Default.

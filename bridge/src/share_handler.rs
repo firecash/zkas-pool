@@ -254,11 +254,23 @@ impl DuplicateSubmitGuard {
             }
         }
 
+        // Over capacity: evict oldest-first, but spend Accepted entries last.
+        // A flood of unique submits must not push out a recent Accepted entry:
+        // losing it turns the next replay of that share into a full resubmit
+        // (and a second credit) instead of a dedup hit.
         while self.entries.len() > self.max_entries {
-            if let Some(key) = self.order.pop_front() {
-                self.entries.remove(&key);
-            } else {
-                break;
+            let victim = self
+                .order
+                .iter()
+                .find(|key| !matches!(self.entries.get(*key).map(|e| e.outcome), Some(DuplicateSubmitOutcome::Accepted)))
+                .or_else(|| self.order.front())
+                .cloned();
+            match victim {
+                Some(key) => {
+                    self.order.retain(|k| k != &key);
+                    self.entries.remove(&key);
+                }
+                None => break,
             }
         }
     }
