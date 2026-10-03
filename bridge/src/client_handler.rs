@@ -1,3 +1,4 @@
+use crate::hasher::cap_share_difficulty;
 use crate::{
     hasher::{calculate_target, generate_iceriver_job_params, generate_job_header, generate_large_job_params, serialize_block_header},
     jsonrpc_event::JsonRpcEvent,
@@ -49,8 +50,7 @@ const CLIENT_TIMEOUT: Duration = Duration::from_secs(20);
 /// re-issues prefixes it has already handed to connected miners and puts two rigs
 /// on the same nonce space. Keeping one counter per width makes each port's
 /// rotation independent, so adding a narrow port cannot disturb a wide one.
-static NEXT_EXTRANONCE: [AtomicI32; 4] =
-    [AtomicI32::new(0), AtomicI32::new(0), AtomicI32::new(0), AtomicI32::new(0)];
+static NEXT_EXTRANONCE: [AtomicI32; 4] = [AtomicI32::new(0), AtomicI32::new(0), AtomicI32::new(0), AtomicI32::new(0)];
 
 /// Hand out the next nonce prefix of `width` bytes.
 ///
@@ -348,8 +348,7 @@ impl ClientHandler {
         // left to split across the rigs behind it, and no config value could express
         // that. The default is still 2, so every existing port keeps its behaviour.
         let configured_extranonce_size = self.extranonce_size.clamp(0, 3);
-        let required_extranonce_size =
-            if is_bitmain && !bitmain_extranonce_enabled { 0 } else { configured_extranonce_size };
+        let required_extranonce_size = if is_bitmain && !bitmain_extranonce_enabled { 0 } else { configured_extranonce_size };
 
         let extranonce = if required_extranonce_size > 0 {
             let (extranonce_str, extranonce_val, wrapped) = next_extranonce_prefix(required_extranonce_size as u8);
@@ -509,7 +508,15 @@ impl ClientHandler {
             let kas_payout = client_clone.kas_payout.lock().clone();
             let lane_id = client_clone.session_uid();
             let template_result = kaspa_api_clone
-                .get_block_template(&wallet_addr, &remote_app, &canxium_addr, client_clone.session_uid(), generation, kas_payout, lane_id)
+                .get_block_template(
+                    &wallet_addr,
+                    &remote_app,
+                    &canxium_addr,
+                    client_clone.session_uid(),
+                    generation,
+                    kas_payout,
+                    lane_id,
+                )
                 .await;
 
             let block = match template_result {
@@ -581,7 +588,10 @@ impl ClientHandler {
             };
 
             // Calculate target
-            let big_diff = calculate_target(block.header.bits as u64);
+            let parent_target = calculate_target(block.header.bits as u64);
+            let easiest_target =
+                kaspa_api_clone.merged_fc_target(&block).map(|t| t.max(parent_target.clone())).unwrap_or(parent_target);
+            let big_diff = easiest_target.clone();
             state.set_big_diff(big_diff);
 
             // Serialize header - now returns Hash type directly
@@ -608,15 +618,6 @@ impl ClientHandler {
             // Create Job struct with both block and pre_pow_hash
             let job = Job { block: block.clone(), pre_pow_hash };
 
-            // Add job
-            let job_id = state.add_job(job);
-            let counter_after = state.current_job_counter();
-            let stored_ids = state.get_stored_job_ids();
-            debug!(
-                "[JOB CREATION] send_immediate_job: created job ID {} for client {} (counter: {}, stored IDs: {:?})",
-                job_id, client_clone.remote_addr, counter_after, stored_ids
-            );
-
             // Initialize state if first time
             if !state.is_initialized() {
                 state.set_initialized(true);
@@ -642,6 +643,11 @@ impl ClientHandler {
                     target_bytes.len() * 8
                 );
             }
+
+            let mut difficulty = state.stratum_diff().expect("initialized difficulty");
+            difficulty.set_diff_value(cap_share_difficulty(difficulty.diff_value, &easiest_target));
+            state.set_stratum_diff(difficulty);
+            let job_id = state.add_job(job);
 
             // CRITICAL: Always send difficulty to each client (IceRiver expects this on every connection)
             // Even if state is already initialized, we need to send difficulty to this specific client
@@ -754,6 +760,11 @@ impl ClientHandler {
             let send_result = if is_iceriver {
                 // IceRiver expects minimal notification format (method + params only, no id or jsonrpc)
                 client_clone.send_notification("mining.notify", job_params.clone()).await
+            } else if remote_app_lower.contains("lazypickaxe") {
+                // The XMRig-style rental proxy expects method+params, with no id/jsonrpc.
+                client_clone.send_notification("mining.notify", job_params.clone()).await
+            } else if remote_app_lower.contains("nicehash") {
+                client_clone.send_v1_notification("mining.notify", job_params.clone()).await
             } else {
                 // For non-IceRiver, use standard JSON-RPC format with job ID
                 let notify_event = JsonRpcEvent {
@@ -873,7 +884,15 @@ impl ClientHandler {
                 let kas_payout = client_clone.kas_payout.lock().clone();
                 let lane_id = client_clone.session_uid();
                 let template_result = kaspa_api_clone
-                    .get_block_template(&wallet_addr, &remote_app, &canxium_addr, client_clone.session_uid(), generation, kas_payout, lane_id)
+                    .get_block_template(
+                        &wallet_addr,
+                        &remote_app,
+                        &canxium_addr,
+                        client_clone.session_uid(),
+                        generation,
+                        kas_payout,
+                        lane_id,
+                    )
                     .await;
 
                 let block = match template_result {
@@ -895,7 +914,10 @@ impl ClientHandler {
                 };
 
                 // Calculate target
-                let big_diff = calculate_target(block.header.bits as u64);
+                let parent_target = calculate_target(block.header.bits as u64);
+                let easiest_target =
+                    kaspa_api_clone.merged_fc_target(&block).map(|t| t.max(parent_target.clone())).unwrap_or(parent_target);
+                let big_diff = easiest_target.clone();
                 state.set_big_diff(big_diff);
 
                 // Serialize header - now returns Hash type directly
@@ -925,16 +947,8 @@ impl ClientHandler {
                 // Create Job struct with both block and pre_pow_hash
                 let job = Job { block: block.clone(), pre_pow_hash };
 
-                // Add job
-                let job_id = state.add_job(job);
-                let counter_after = state.current_job_counter();
-                let stored_ids = state.get_stored_job_ids();
-                debug!(
-                    "[JOB CREATION] new_block_available: created job ID {} for client {} (counter: {}, stored IDs: {:?})",
-                    job_id, client_clone.remote_addr, counter_after, stored_ids
-                );
-
-                let initial_diff = share_handler.register_client_vardiff(&client_clone, min_diff);
+                let initial_diff =
+                    cap_share_difficulty(share_handler.register_client_vardiff(&client_clone, min_diff), &easiest_target);
 
                 // Initialize state if first time (per-client state initialization)
                 if !state.is_initialized() {
@@ -968,7 +982,7 @@ impl ClientHandler {
                     // Check for vardiff update
                     if let Some(mut stratum_diff) = state.stratum_diff() {
                         let current_diff = stratum_diff.diff_value;
-                        let mut var_diff = share_handler.get_client_vardiff(&client_clone);
+                        let mut var_diff = cap_share_difficulty(share_handler.get_client_vardiff(&client_clone), &easiest_target);
 
                         // Recover from stale/recreated stats entries that can report 0.0 diff.
                         // Seed back to current state diff so UI/terminal does not stick at zero.
@@ -994,6 +1008,17 @@ impl ClientHandler {
                         }
                     }
                 }
+
+                let mut difficulty = state.stratum_diff().expect("initialized difficulty");
+                let capped = cap_share_difficulty(difficulty.diff_value, &easiest_target);
+                if capped != difficulty.diff_value {
+                    difficulty.set_diff_value(capped);
+                    state.set_stratum_diff(difficulty);
+                    if send_client_diff(&instance_id, &client_clone, capped).await.is_err() {
+                        return;
+                    }
+                }
+                let job_id = state.add_job(job);
 
                 // Build job params
                 // Check if this is an IceRiver or Bitmain miner - they need single hex string format
@@ -1068,6 +1093,10 @@ impl ClientHandler {
                 let send_result = if is_iceriver_client {
                     // IceRiver expects minimal notification format (method + params only, no id or jsonrpc)
                     client_clone.send_notification("mining.notify", job_params.clone()).await
+                } else if remote_app_lower.contains("lazypickaxe") {
+                    client_clone.send_notification("mining.notify", job_params.clone()).await
+                } else if remote_app_lower.contains("nicehash") {
+                    client_clone.send_v1_notification("mining.notify", job_params.clone()).await
                 } else {
                     // For non-IceRiver, use standard JSON-RPC format with job ID
                     let notify_event = JsonRpcEvent {
@@ -1148,7 +1177,8 @@ impl ClientHandler {
                 // A parent-only refresh must keep paying whoever the ORIGINAL template
                 // paid, or a refresh landing inside/outside the fee minute would silently
                 // move the payout mid-job. `paid_pool` is the recorded truth for this lane.
-                let refresh_payee = if kaspa_api.merged_lane_paid_pool(&old_job.block) { None } else { client.kas_payout.lock().clone() };
+                let refresh_payee =
+                    if kaspa_api.merged_lane_paid_pool(&old_job.block) { None } else { client.kas_payout.lock().clone() };
                 let parent = match kaspa_api.refresh_merged_parent(&old_job.block, refresh_payee).await {
                     Ok(Some(parent)) => parent,
                     Ok(None) => return,
@@ -1175,6 +1205,18 @@ impl ClientHandler {
                         return;
                     }
                 };
+                let parent_target = calculate_target(parent.header.bits as u64);
+                let easiest = kaspa_api.merged_fc_target(&parent).map(|t| t.max(parent_target.clone())).unwrap_or(parent_target);
+                if let Some(mut difficulty) = state.stratum_diff() {
+                    let capped = cap_share_difficulty(difficulty.diff_value, &easiest);
+                    if capped != difficulty.diff_value {
+                        difficulty.set_diff_value(capped);
+                        state.set_stratum_diff(difficulty);
+                        if send_client_diff(&instance_id, &client, capped).await.is_err() {
+                            return;
+                        }
+                    }
+                }
                 let job_id = state.add_job(Job { block: parent.clone(), pre_pow_hash });
                 let remote_app = client.remote_app.lock().clone();
                 let remote_app_lower = remote_app.to_ascii_lowercase();
@@ -1196,6 +1238,10 @@ impl ClientHandler {
 
                 let send_result = if is_iceriver {
                     client.send_notification("mining.notify", params).await
+                } else if remote_app_lower.contains("lazypickaxe") {
+                    client.send_notification("mining.notify", params).await
+                } else if remote_app_lower.contains("nicehash") {
+                    client.send_v1_notification("mining.notify", params).await
                 } else {
                     client
                         .send(JsonRpcEvent {
@@ -1229,11 +1275,17 @@ async fn send_client_diff(instance_id: &str, client: &StratumContext, diff: f64)
 
     debug!("[DIFFICULTY] Sending mining.set_difficulty to {}", client.remote_addr);
 
-    // Always use standard JSON-RPC format
+    // Rental proxies use Stratum v1 notifications, with an explicit null id.
+    let nicehash = client.remote_app.lock().to_ascii_lowercase().contains("nicehash");
     let diff_event =
         JsonRpcEvent { jsonrpc: "2.0".to_string(), method: "mining.set_difficulty".to_string(), id: None, params: vec![diff_value] };
 
-    if let Err(e) = client.send(diff_event).await {
+    let sent = if nicehash {
+        client.send_v1_notification("mining.set_difficulty", diff_event.params).await
+    } else {
+        client.send(diff_event).await
+    };
+    if let Err(e) = sent {
         let wallet_addr = client.wallet_addr.lock().clone();
         record_worker_error(instance_id, &wallet_addr, crate::errors::ErrorShortCode::FailedSetDiff.as_str());
         error!("[DIFFICULTY] ERROR: Failed sending difficulty: {}", e);
@@ -1286,5 +1338,11 @@ mod seed_tests {
         let message: serde_json::Value = serde_json::from_slice(&bytes[..read]).unwrap();
         assert_eq!(message["method"], "mining.set_difficulty");
         assert_eq!(message["params"][0], 256.0);
+
+        *ctx.remote_app.lock() = "NiceHash/1.0.0".to_string();
+        send_client_diff("test", &ctx, 16384.0).await.unwrap();
+        let read = tokio::time::timeout(std::time::Duration::from_secs(1), client.read(&mut bytes)).await.unwrap().unwrap();
+        let message: serde_json::Value = serde_json::from_slice(&bytes[..read]).unwrap();
+        assert_eq!(message, serde_json::json!({"id": null, "method": "mining.set_difficulty", "params": [16384]}));
     }
 }

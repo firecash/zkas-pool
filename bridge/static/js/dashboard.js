@@ -765,7 +765,202 @@ function updateBlocksChartFromBlocks(blocks, totalAllBlocks, walletFilter) {
   renderDonutChart('blocksPie', 'blocksPieLegend', top, emptyMessage);
 }
 
+
+let latestTableStats = null;
+let refreshInFlight = false;
+const pagination = {blocks: {page: 1, size: 25, filter: null}, workers: {page: 1, size: 25, filter: null}};
+
+function updatePoolHashrate(stats) {
+  const fallback = (stats.workers || []).reduce((sum, w) => sum + (Number(w.hashrate) || 0) * 1e9, 0)
+    + (Number(stats.internalCpu?.hashrateGhs) || 0) * 1e9;
+  const rate = Number.isFinite(stats.poolHashrate) ? stats.poolHashrate : fallback;
+  const el = document.getElementById('totalWorkerHashrate');
+  if (el) { el.textContent = `(${formatHashrateHs(rate)})`; el.title = 'Difficulty-weighted hashrate over the last 5 minutes; a new process uses its elapsed runtime until the window fills.'; }
+}
+
+function pageRange(kind, total) {
+  const state = pagination[kind];
+  const pages = Math.max(1, Math.ceil(total / state.size));
+  state.page = Math.min(Math.max(1, state.page), pages);
+  const start = (state.page - 1) * state.size;
+  const end = Math.min(total, start + state.size);
+  document.getElementById(`${kind}PageInfo`).textContent = `Page ${state.page} / ${pages} · ${total ? start + 1 : 0}–${end} of ${total}`;
+  document.getElementById(`${kind}Prev`).disabled = state.page === 1;
+  document.getElementById(`${kind}Next`).disabled = state.page === pages;
+  return {start, end};
+}
+
+for (const kind of ['blocks', 'workers']) {
+  for (const [suffix, delta] of [['Prev', -1], ['Next', 1]]) {
+    document.getElementById(`${kind}${suffix}`).addEventListener('click', () => {
+      pagination[kind].page += delta;
+      if (latestTableStats) renderDashboardTables(latestTableStats);
+    });
+  }
+  document.getElementById(`${kind}PageSize`).addEventListener('change', (event) => {
+    pagination[kind].size = Number(event.target.value);
+    pagination[kind].page = 1;
+    if (latestTableStats) renderDashboardTables(latestTableStats);
+  });
+}
+
+function renderDashboardTables(stats) {
+  latestTableStats = stats;
+  const icpu = stats.internalCpu;
+  updatePoolHashrate(stats);
+  const filter = getWalletFilter();
+  const dayFilter = getBlocksDayFilter();
+  const blockFilter = `${filter}|${dayFilter}`;
+  if (pagination.blocks.filter !== blockFilter) { pagination.blocks.page = 1; pagination.blocks.filter = blockFilter; }
+  if (pagination.workers.filter !== filter) { pagination.workers.page = 1; pagination.workers.filter = filter; }
+
+  renderWalletSummary(stats, filter);
+
+  let blocks = (stats.blocks || []).filter(b => !filter || (b.wallet || '').includes(filter));
+  blocks = filterBlocksByDays(blocks, dayFilter);
+  lastFilteredBlocks = blocks;
+  const blocksBody = document.getElementById('blocksBody');
+  blocksBody.innerHTML = '';
+  const blockRange = pageRange('blocks', blocks.length);
+  blocks.slice(blockRange.start, blockRange.end).forEach((b, pageIndex) => {
+    const idx = blockRange.start + pageIndex;
+  const nonceInfo = formatNonceInfo(b.nonce);
+  const hashFull = b.hash || '';
+  const hashShort = shortHash(hashFull);
+  const workerDisplay = displayWorkerName(b.worker);
+  const tr = document.createElement('tr');
+  tr.className = 'border-b border-card/50 cursor-pointer';
+  tr.setAttribute('data-row-kind', 'block');
+  tr.setAttribute('data-row-index', String(idx));
+  tr.innerHTML = `
+    <td class="py-1.5 pr-3" title="${b.timestamp || ''}">${formatUnixSeconds(b.timestamp)}</td>
+    <td class="py-1.5 pr-3" title="${escapeHtmlAttr(b.instance || '')}">${b.instance || '-'}</td>
+    <td class="py-1.5 pr-3" title="${escapeHtmlAttr(b.bluescore || '')}">${b.bluescore || '-'}</td>
+    <td class="py-1.5 pr-3" title="${escapeHtmlAttr(workerDisplay)}">${escapeHtmlAttr(workerDisplay)}</td>
+    <td class="py-1.5 pr-3">
+      <div class="flex items-center gap-2 min-w-0">
+        <span class="min-w-0 truncate" title="${escapeHtmlAttr(b.wallet || '')}">${escapeHtmlAttr(b.wallet || '-')}</span>
+        ${b.wallet ? `<button type="button" class="bg-surface-1 border border-card px-2 py-0.5 rounded text-xs hover:border-kaspa-primary shrink-0" data-copy-text="${escapeHtmlAttr(b.wallet)}">Copy</button>` : ''}
+      </div>
+    </td>
+    <td class="py-1.5 pr-3 font-mono" title="${escapeHtmlAttr(nonceInfo.title)}">${nonceInfo.display || '-'}</td>
+    <td class="py-1.5 pr-3">
+      <div class="flex items-center gap-2 min-w-0">
+        <span class="font-mono min-w-0 truncate" title="${hashFull}">${hashShort}</span>
+        ${hashFull ? `<button type="button" class="bg-surface-1 border border-card px-2 py-0.5 rounded text-xs hover:border-kaspa-primary shrink-0" data-copy-text="${escapeHtmlAttr(hashFull)}">Copy</button>` : ''}
+      </div>
+    </td>
+  `;
+  blocksBody.appendChild(tr);
+  });
+
+  const allWorkers = stats.workers || [];
+  const existingOrder = readWorkerOrder();
+  const orderedWorkers = maintainWorkerOrder(existingOrder, allWorkers);
+  const workers = orderedWorkers.filter(w => !filter || (w.wallet || '').includes(filter));
+  lastFilteredWorkers = workers;
+  const workersBody = document.getElementById('workersBody');
+  workersBody.innerHTML = '';
+  lastInternalCpuWorker = null;
+  const cpuVisible = !filter && icpu && typeof icpu === 'object';
+  const workerRange = pageRange('workers', workers.length + (cpuVisible ? 1 : 0));
+
+  // Show filter indicator if wallet filter is active
+  const workersTable = document.querySelector('[data-workers-table]');
+  if (workersTable) {
+  const filterIndicator = workersTable.querySelector('.wallet-filter-indicator');
+  if (filter) {
+    if (!filterIndicator) {
+      const indicator = document.createElement('div');
+      indicator.className = 'wallet-filter-indicator bg-yellow-900/20 border border-yellow-700/50 rounded-lg px-3 py-2 mb-3 text-sm text-yellow-300';
+      indicator.innerHTML = `
+        <div class="flex items-center justify-between gap-3">
+          <span>⚠️ Showing ${workers.length} of ${allWorkers.length} workers (filtered by wallet)</span>
+          <button type="button" class="text-yellow-300 hover:text-yellow-200 underline text-xs" onclick="document.getElementById('walletClearBtn')?.click()">Clear filter</button>
+        </div>
+      `;
+      workersTable.insertBefore(indicator, workersTable.firstChild);
+    } else {
+      filterIndicator.querySelector('span').textContent = `⚠️ Showing ${workers.length} of ${allWorkers.length} workers (filtered by wallet)`;
+    }
+  } else if (filterIndicator) {
+    filterIndicator.remove();
+  }
+}
+
+  // Render internal CPU miner row as a pseudo-worker (not affected by wallet filter).
+  if (cpuVisible) {
+  const tr = document.createElement('tr');
+  tr.className = 'border-b border-card/50 cursor-pointer';
+  const hashrateHs = (Number(icpu.hashrateGhs) || 0) * 1e9;
+  const wallet = String(icpu.wallet ?? '').trim();
+  const shares = Number(icpu.shares ?? icpu.blocksAccepted) || 0;
+  const stale = Number(icpu.stale ?? ((Number(icpu.blocksSubmitted) || 0) - (Number(icpu.blocksAccepted) || 0))) || 0;
+  const invalid = Number(icpu.invalid ?? 0) || 0;
+  lastInternalCpuWorker = { wallet, hashrateHs, shares, stale, invalid, blocks: Number(icpu.blocksAccepted) || 0 };
+  tr.setAttribute('data-row-kind', 'icpu');
+  tr.setAttribute('data-row-index', '-1');
+  tr.innerHTML = `
+    <td class="py-1.5 pr-3">-</td>
+    <td class="py-1.5 pr-3">${escapeHtmlAttr(displayWorkerName('InternalCPU'))}</td>
+    <td class="py-1.5 pr-3">
+      <div class="flex items-center gap-2 min-w-0">
+        <span class="min-w-0 truncate" title="${escapeHtmlAttr(wallet)}">${escapeHtmlAttr(wallet || '-')}</span>
+        ${wallet ? `<button type="button" class="bg-surface-1 border border-card px-2 py-0.5 rounded text-xs hover:border-kaspa-primary shrink-0" data-copy-text="${escapeHtmlAttr(wallet)}">Copy</button>` : ''}
+      </div>
+    </td>
+    <td class="py-1.5 pr-3">${formatHashrateHs(hashrateHs)}</td>
+    <td class="py-1.5 pr-3">-</td>
+    <td class="py-1.5 pr-3">${shares}</td>
+    <td class="py-1.5 pr-3">${stale}</td>
+    <td class="py-1.5 pr-3">${invalid}</td>
+    <td class="py-1.5 pr-3">${Number(icpu.blocksAccepted) || 0}</td>
+    <td class="py-1.5 pr-3">-</td>
+    <td class="py-1.5 pr-3">-</td>
+    <td class="py-1.5 pr-3">-</td>
+  `;
+  if (workerRange.start === 0) workersBody.appendChild(tr);
+}
+
+  const workerOffset = cpuVisible ? 1 : 0;
+  const workerStart = Math.max(0, workerRange.start - workerOffset);
+  workers.slice(workerStart, Math.max(0, workerRange.end - workerOffset)).forEach((w, pageIndex) => {
+    const idx = workerStart + pageIndex;
+  const tr = document.createElement('tr');
+  tr.className = 'border-b border-card/50 cursor-pointer';
+  tr.setAttribute('data-row-kind', 'worker');
+  tr.setAttribute('data-row-index', String(idx));
+  tr.innerHTML = `
+    <td class="py-1.5 pr-3" title="${escapeHtmlAttr(w.instance || '')}">${w.instance || '-'}</td>
+    <td class="py-1.5 pr-3" title="${escapeHtmlAttr(displayWorkerName(w.worker))}">${escapeHtmlAttr(displayWorkerName(w.worker))}</td>
+    <td class="py-1.5 pr-3">
+      <div class="flex items-center gap-2 min-w-0">
+        <span class="min-w-0 truncate" title="${escapeHtmlAttr(w.wallet || '')}">${escapeHtmlAttr(w.wallet || '-')}</span>
+        ${w.wallet ? `<button type="button" class="bg-surface-1 border border-card px-2 py-0.5 rounded text-xs hover:border-kaspa-primary shrink-0" data-copy-text="${String(w.wallet).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;')}">Copy</button>` : ''}
+      </div>
+    </td>
+    <td class="py-1.5 pr-3">${formatHashrateHs((w.hashrate || 0) * 1e9)}</td>
+    <td class="py-1.5 pr-3">${w.currentDifficulty != null ? formatDifficulty(w.currentDifficulty) : '-'}</td>
+    <td class="py-1.5 pr-3">${w.shares ?? '-'}</td>
+    <td class="py-1.5 pr-3">${w.stale ?? '-'}</td>
+    <td class="py-1.5 pr-3">${w.invalid ?? '-'}</td>
+    <td class="py-1.5 pr-3">${w.blocks ?? '-'}</td>
+    <td class="py-1.5 pr-3">
+      ${w.status ? `<span class="inline-flex items-center gap-1.5"><span class="w-2 h-2 rounded-full ${getStatusBgColor(w.status)}"></span><span class="${getStatusColor(w.status)} capitalize">${escapeHtmlAttr(w.status)}</span></span>` : '-'}
+    </td>
+    <td class="py-1.5 pr-3" title="${w.lastSeen ? formatUnixSeconds(w.lastSeen) : ''}">${w.lastSeen ? formatRelativeTime(w.lastSeen) : '-'}</td>
+    <td class="py-1.5 pr-3">${w.sessionUptime != null ? formatUptime(w.sessionUptime) : '-'}</td>
+  `;
+  workersBody.appendChild(tr);
+  });
+
+  updateBlocksChartFromBlocks(blocks, (stats.blocks || []).length, filter);
+
+}
+
 async function refresh() {
+  if (refreshInFlight) return;
+  refreshInFlight = true;
   const loader = document.getElementById('status-loader');
   const statusText = document.getElementById('status-text');
   const setDot = (state, title) => {
@@ -803,15 +998,6 @@ async function refresh() {
     document.getElementById('totalShares').textContent = mergedStats.totalShares;
     document.getElementById('activeWorkers').textContent = mergedStats.activeWorkers;
     
-    // Calculate and display total worker hashrate
-    const totalWorkerHashrateHs = (mergedStats.workers || []).reduce((sum, w) => sum + ((w.hashrate || 0) * 1e9), 0);
-    const totalWorkerHashrateEl = document.getElementById('totalWorkerHashrate');
-    if (totalWorkerHashrateEl && totalWorkerHashrateHs > 0) {
-      totalWorkerHashrateEl.textContent = `(${formatHashrateHs(totalWorkerHashrateHs)})`;
-    } else if (totalWorkerHashrateEl) {
-      totalWorkerHashrateEl.textContent = '';
-    }
-    
     document.getElementById('networkHashrate').textContent = formatHashrateHs(mergedStats.networkHashrate);
     
     // Display bridge uptime
@@ -836,143 +1022,7 @@ async function refresh() {
       setText('internalCpuBlocks', '-');
     }
 
-    const filter = getWalletFilter();
-    const dayFilter = getBlocksDayFilter();
-
-    renderWalletSummary(mergedStats, filter);
-
-    let blocks = (mergedStats.blocks || []).filter(b => !filter || (b.wallet || '').includes(filter));
-    blocks = filterBlocksByDays(blocks, dayFilter);
-    lastFilteredBlocks = blocks;
-    const blocksBody = document.getElementById('blocksBody');
-    blocksBody.innerHTML = '';
-    blocks.forEach((b, idx) => {
-      const nonceInfo = formatNonceInfo(b.nonce);
-      const hashFull = b.hash || '';
-      const hashShort = shortHash(hashFull);
-      const workerDisplay = displayWorkerName(b.worker);
-      const tr = document.createElement('tr');
-      tr.className = 'border-b border-card/50 cursor-pointer';
-      tr.setAttribute('data-row-kind', 'block');
-      tr.setAttribute('data-row-index', String(idx));
-      tr.innerHTML = `
-        <td class="py-1.5 pr-3" title="${b.timestamp || ''}">${formatUnixSeconds(b.timestamp)}</td>
-        <td class="py-1.5 pr-3" title="${escapeHtmlAttr(b.instance || '')}">${b.instance || '-'}</td>
-        <td class="py-1.5 pr-3" title="${escapeHtmlAttr(b.bluescore || '')}">${b.bluescore || '-'}</td>
-        <td class="py-1.5 pr-3" title="${escapeHtmlAttr(workerDisplay)}">${escapeHtmlAttr(workerDisplay)}</td>
-        <td class="py-1.5 pr-3">
-          <div class="flex items-center gap-2 min-w-0">
-            <span class="min-w-0 truncate" title="${escapeHtmlAttr(b.wallet || '')}">${escapeHtmlAttr(b.wallet || '-')}</span>
-            ${b.wallet ? `<button type="button" class="bg-surface-1 border border-card px-2 py-0.5 rounded text-xs hover:border-kaspa-primary shrink-0" data-copy-text="${escapeHtmlAttr(b.wallet)}">Copy</button>` : ''}
-          </div>
-        </td>
-        <td class="py-1.5 pr-3 font-mono" title="${escapeHtmlAttr(nonceInfo.title)}">${nonceInfo.display || '-'}</td>
-        <td class="py-1.5 pr-3">
-          <div class="flex items-center gap-2 min-w-0">
-            <span class="font-mono min-w-0 truncate" title="${hashFull}">${hashShort}</span>
-            ${hashFull ? `<button type="button" class="bg-surface-1 border border-card px-2 py-0.5 rounded text-xs hover:border-kaspa-primary shrink-0" data-copy-text="${escapeHtmlAttr(hashFull)}">Copy</button>` : ''}
-          </div>
-        </td>
-      `;
-      blocksBody.appendChild(tr);
-    });
-
-    const allWorkers = mergedStats.workers || [];
-    const existingOrder = readWorkerOrder();
-    const orderedWorkers = maintainWorkerOrder(existingOrder, allWorkers);
-    const workers = orderedWorkers.filter(w => !filter || (w.wallet || '').includes(filter));
-    lastFilteredWorkers = workers;
-    const workersBody = document.getElementById('workersBody');
-    workersBody.innerHTML = '';
-    lastInternalCpuWorker = null;
-
-    // Show filter indicator if wallet filter is active
-    const workersTable = document.querySelector('[data-workers-table]');
-    if (workersTable) {
-      const filterIndicator = workersTable.querySelector('.wallet-filter-indicator');
-      if (filter) {
-        if (!filterIndicator) {
-          const indicator = document.createElement('div');
-          indicator.className = 'wallet-filter-indicator bg-yellow-900/20 border border-yellow-700/50 rounded-lg px-3 py-2 mb-3 text-sm text-yellow-300';
-          indicator.innerHTML = `
-            <div class="flex items-center justify-between gap-3">
-              <span>⚠️ Showing ${workers.length} of ${allWorkers.length} workers (filtered by wallet)</span>
-              <button type="button" class="text-yellow-300 hover:text-yellow-200 underline text-xs" onclick="document.getElementById('walletClearBtn')?.click()">Clear filter</button>
-            </div>
-          `;
-          workersTable.insertBefore(indicator, workersTable.firstChild);
-        } else {
-          filterIndicator.querySelector('span').textContent = `⚠️ Showing ${workers.length} of ${allWorkers.length} workers (filtered by wallet)`;
-        }
-      } else if (filterIndicator) {
-        filterIndicator.remove();
-      }
-    }
-
-    // Render internal CPU miner row as a pseudo-worker (not affected by wallet filter).
-    if (!filter && icpu && typeof icpu === 'object') {
-      const tr = document.createElement('tr');
-      tr.className = 'border-b border-card/50 cursor-pointer';
-      const hashrateHs = (Number(icpu.hashrateGhs) || 0) * 1e9;
-      const wallet = String(icpu.wallet ?? '').trim();
-      const shares = Number(icpu.shares ?? icpu.blocksAccepted) || 0;
-      const stale = Number(icpu.stale ?? ((Number(icpu.blocksSubmitted) || 0) - (Number(icpu.blocksAccepted) || 0))) || 0;
-      const invalid = Number(icpu.invalid ?? 0) || 0;
-      lastInternalCpuWorker = { wallet, hashrateHs, shares, stale, invalid, blocks: Number(icpu.blocksAccepted) || 0 };
-      tr.setAttribute('data-row-kind', 'icpu');
-      tr.setAttribute('data-row-index', '-1');
-      tr.innerHTML = `
-        <td class="py-1.5 pr-3">-</td>
-        <td class="py-1.5 pr-3">${escapeHtmlAttr(displayWorkerName('InternalCPU'))}</td>
-        <td class="py-1.5 pr-3">
-          <div class="flex items-center gap-2 min-w-0">
-            <span class="min-w-0 truncate" title="${escapeHtmlAttr(wallet)}">${escapeHtmlAttr(wallet || '-')}</span>
-            ${wallet ? `<button type="button" class="bg-surface-1 border border-card px-2 py-0.5 rounded text-xs hover:border-kaspa-primary shrink-0" data-copy-text="${escapeHtmlAttr(wallet)}">Copy</button>` : ''}
-          </div>
-        </td>
-        <td class="py-1.5 pr-3">${formatHashrateHs(hashrateHs)}</td>
-        <td class="py-1.5 pr-3">-</td>
-        <td class="py-1.5 pr-3">${shares}</td>
-        <td class="py-1.5 pr-3">${stale}</td>
-        <td class="py-1.5 pr-3">${invalid}</td>
-        <td class="py-1.5 pr-3">${Number(icpu.blocksAccepted) || 0}</td>
-        <td class="py-1.5 pr-3">-</td>
-        <td class="py-1.5 pr-3">-</td>
-        <td class="py-1.5 pr-3">-</td>
-      `;
-      workersBody.appendChild(tr);
-    }
-
-    workers.forEach((w, idx) => {
-      const tr = document.createElement('tr');
-      tr.className = 'border-b border-card/50 cursor-pointer';
-      tr.setAttribute('data-row-kind', 'worker');
-      tr.setAttribute('data-row-index', String(idx));
-      tr.innerHTML = `
-        <td class="py-1.5 pr-3" title="${escapeHtmlAttr(w.instance || '')}">${w.instance || '-'}</td>
-        <td class="py-1.5 pr-3" title="${escapeHtmlAttr(displayWorkerName(w.worker))}">${escapeHtmlAttr(displayWorkerName(w.worker))}</td>
-        <td class="py-1.5 pr-3">
-          <div class="flex items-center gap-2 min-w-0">
-            <span class="min-w-0 truncate" title="${escapeHtmlAttr(w.wallet || '')}">${escapeHtmlAttr(w.wallet || '-')}</span>
-            ${w.wallet ? `<button type="button" class="bg-surface-1 border border-card px-2 py-0.5 rounded text-xs hover:border-kaspa-primary shrink-0" data-copy-text="${String(w.wallet).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;')}">Copy</button>` : ''}
-          </div>
-        </td>
-        <td class="py-1.5 pr-3">${formatHashrateHs((w.hashrate || 0) * 1e9)}</td>
-        <td class="py-1.5 pr-3">${w.currentDifficulty != null ? formatDifficulty(w.currentDifficulty) : '-'}</td>
-        <td class="py-1.5 pr-3">${w.shares ?? '-'}</td>
-        <td class="py-1.5 pr-3">${w.stale ?? '-'}</td>
-        <td class="py-1.5 pr-3">${w.invalid ?? '-'}</td>
-        <td class="py-1.5 pr-3">${w.blocks ?? '-'}</td>
-        <td class="py-1.5 pr-3">
-          ${w.status ? `<span class="inline-flex items-center gap-1.5"><span class="w-2 h-2 rounded-full ${getStatusBgColor(w.status)}"></span><span class="${getStatusColor(w.status)} capitalize">${escapeHtmlAttr(w.status)}</span></span>` : '-'}
-        </td>
-        <td class="py-1.5 pr-3" title="${w.lastSeen ? formatUnixSeconds(w.lastSeen) : ''}">${w.lastSeen ? formatRelativeTime(w.lastSeen) : '-'}</td>
-        <td class="py-1.5 pr-3">${w.sessionUptime != null ? formatUptime(w.sessionUptime) : '-'}</td>
-      `;
-      workersBody.appendChild(tr);
-    });
-
-    updateBlocksChartFromBlocks(blocks, (mergedStats.blocks || []).length, filter);
+    renderDashboardTables(mergedStats);
 
     // raw view is on /raw.html
   } catch (e) {
@@ -1011,149 +1061,14 @@ async function refresh() {
         setText('internalCpuBlocks', '-');
       }
 
-      const filter = getWalletFilter();
-      const dayFilter = getBlocksDayFilter();
-
-      renderWalletSummary(cached.stats, filter);
-
-      let blocks = (cached.stats.blocks || []).filter(b => !filter || (b.wallet || '').includes(filter));
-      blocks = filterBlocksByDays(blocks, dayFilter);
-      lastFilteredBlocks = blocks;
-      const blocksBody = document.getElementById('blocksBody');
-      blocksBody.innerHTML = '';
-      blocks.forEach((b, idx) => {
-        const nonceInfo = formatNonceInfo(b.nonce);
-        const hashFull = b.hash || '';
-        const hashShort = shortHash(hashFull);
-      const workerDisplay = displayWorkerName(b.worker);
-        const tr = document.createElement('tr');
-        tr.className = 'border-b border-card/50 cursor-pointer';
-        tr.setAttribute('data-row-kind', 'block');
-        tr.setAttribute('data-row-index', String(idx));
-        tr.innerHTML = `
-          <td class="py-1.5 pr-3" title="${b.timestamp || ''}">${formatUnixSeconds(b.timestamp)}</td>
-          <td class="py-1.5 pr-3" title="${escapeHtmlAttr(b.instance || '')}">${b.instance || '-'}</td>
-          <td class="py-1.5 pr-3" title="${escapeHtmlAttr(b.bluescore || '')}">${b.bluescore || '-'}</td>
-        <td class="py-1.5 pr-3" title="${escapeHtmlAttr(workerDisplay)}">${escapeHtmlAttr(workerDisplay)}</td>
-        <td class="py-1.5 pr-3">
-          <div class="flex items-center gap-2 min-w-0">
-              <span class="min-w-0 truncate" title="${escapeHtmlAttr(b.wallet || '')}">${escapeHtmlAttr(b.wallet || '-')}</span>
-              ${b.wallet ? `<button type="button" class="bg-surface-1 border border-card px-2 py-0.5 rounded text-xs hover:border-kaspa-primary shrink-0" data-copy-text="${escapeHtmlAttr(b.wallet)}">Copy</button>` : ''}
-          </div>
-        </td>
-          <td class="py-1.5 pr-3 font-mono" title="${escapeHtmlAttr(nonceInfo.title)}">${nonceInfo.display || '-'}</td>
-          <td class="py-1.5 pr-3">
-            <div class="flex items-center gap-2 min-w-0">
-              <span class="font-mono min-w-0 truncate" title="${hashFull}">${hashShort}</span>
-              ${hashFull ? `<button type="button" class="bg-surface-1 border border-card px-2 py-0.5 rounded text-xs hover:border-kaspa-primary shrink-0" data-copy-text="${escapeHtmlAttr(hashFull)}">Copy</button>` : ''}
-            </div>
-          </td>
-        `;
-        blocksBody.appendChild(tr);
-      });
-
-      const allWorkers = cached.stats.workers || [];
-      const existingOrder = readWorkerOrder();
-      const orderedWorkers = maintainWorkerOrder(existingOrder, allWorkers);
-      const workers = orderedWorkers.filter(w => !filter || (w.wallet || '').includes(filter));
-      lastFilteredWorkers = workers;
-      const workersBody = document.getElementById('workersBody');
-      workersBody.innerHTML = '';
-      lastInternalCpuWorker = null;
-
-      // Show filter indicator if wallet filter is active
-      const workersTable = document.querySelector('[data-workers-table]');
-      if (workersTable) {
-        const filterIndicator = workersTable.querySelector('.wallet-filter-indicator');
-        if (filter) {
-          if (!filterIndicator) {
-            const indicator = document.createElement('div');
-            indicator.className = 'wallet-filter-indicator bg-yellow-900/20 border border-yellow-700/50 rounded-lg px-3 py-2 mb-3 text-sm text-yellow-300';
-            indicator.innerHTML = `
-              <div class="flex items-center justify-between gap-3">
-                <span>⚠️ Showing ${workers.length} of ${allWorkers.length} workers (filtered by wallet)</span>
-                <button type="button" class="text-yellow-300 hover:text-yellow-200 underline text-xs" onclick="document.getElementById('walletClearBtn')?.click()">Clear filter</button>
-              </div>
-            `;
-            workersTable.insertBefore(indicator, workersTable.firstChild);
-          } else {
-            filterIndicator.querySelector('span').textContent = `⚠️ Showing ${workers.length} of ${allWorkers.length} workers (filtered by wallet)`;
-          }
-        } else if (filterIndicator) {
-          filterIndicator.remove();
-        }
-      }
-
-      // Render internal CPU miner row as a pseudo-worker (not affected by wallet filter).
-      if (!filter && icpu && typeof icpu === 'object') {
-        const tr = document.createElement('tr');
-        tr.className = 'border-b border-card/50 cursor-pointer';
-        const hashrateHs = (Number(icpu.hashrateGhs) || 0) * 1e9;
-        const wallet = String(icpu.wallet ?? '').trim();
-        const shares = Number(icpu.shares ?? icpu.blocksAccepted) || 0;
-        const stale = Number(icpu.stale ?? ((Number(icpu.blocksSubmitted) || 0) - (Number(icpu.blocksAccepted) || 0))) || 0;
-        const invalid = Number(icpu.invalid ?? 0) || 0;
-        lastInternalCpuWorker = { wallet, hashrateHs, shares, stale, invalid, blocks: Number(icpu.blocksAccepted) || 0 };
-        tr.setAttribute('data-row-kind', 'icpu');
-        tr.setAttribute('data-row-index', '-1');
-        tr.innerHTML = `
-          <td class="py-1.5 pr-3">-</td>
-          <td class="py-1.5 pr-3">${escapeHtmlAttr(displayWorkerName('InternalCPU'))}</td>
-          <td class="py-1.5 pr-3">
-            <div class="flex items-center gap-2 min-w-0">
-              <span class="min-w-0 truncate" title="${escapeHtmlAttr(wallet)}">${escapeHtmlAttr(wallet || '-')}</span>
-              ${wallet ? `<button type="button" class="bg-surface-1 border border-card px-2 py-0.5 rounded text-xs hover:border-kaspa-primary shrink-0" data-copy-text="${escapeHtmlAttr(wallet)}">Copy</button>` : ''}
-            </div>
-          </td>
-          <td class="py-1.5 pr-3">${formatHashrateHs(hashrateHs)}</td>
-          <td class="py-1.5 pr-3">-</td>
-          <td class="py-1.5 pr-3">${shares}</td>
-          <td class="py-1.5 pr-3">${stale}</td>
-          <td class="py-1.5 pr-3">${invalid}</td>
-          <td class="py-1.5 pr-3">${Number(icpu.blocksAccepted) || 0}</td>
-          <td class="py-1.5 pr-3">-</td>
-          <td class="py-1.5 pr-3">-</td>
-          <td class="py-1.5 pr-3">-</td>
-        `;
-        workersBody.appendChild(tr);
-      }
-
-      workers.forEach((w, idx) => {
-        const tr = document.createElement('tr');
-        tr.className = 'border-b border-card/50 cursor-pointer';
-        tr.setAttribute('data-row-kind', 'worker');
-        tr.setAttribute('data-row-index', String(idx));
-        tr.innerHTML = `
-          <td class="py-1.5 pr-3" title="${escapeHtmlAttr(w.instance || '')}">${w.instance || '-'}</td>
-          <td class="py-1.5 pr-3" title="${escapeHtmlAttr(displayWorkerName(w.worker))}">${escapeHtmlAttr(displayWorkerName(w.worker))}</td>
-          <td class="py-1.5 pr-3">
-            <div class="flex items-center gap-2 min-w-0">
-              <span class="min-w-0 truncate" title="${escapeHtmlAttr(w.wallet || '')}">${escapeHtmlAttr(w.wallet || '-')}</span>
-              ${w.wallet ? `<button type="button" class="bg-surface-1 border border-card px-2 py-0.5 rounded text-xs hover:border-kaspa-primary shrink-0" data-copy-text="${escapeHtmlAttr(w.wallet)}">Copy</button>` : ''}
-            </div>
-          </td>
-          <td class="py-1.5 pr-3">${formatHashrateHs((w.hashrate || 0) * 1e9)}</td>
-          <td class="py-1.5 pr-3">${w.currentDifficulty != null ? formatDifficulty(w.currentDifficulty) : '-'}</td>
-          <td class="py-1.5 pr-3">${w.shares ?? '-'}</td>
-          <td class="py-1.5 pr-3">${w.stale ?? '-'}</td>
-          <td class="py-1.5 pr-3">${w.invalid ?? '-'}</td>
-          <td class="py-1.5 pr-3">${w.blocks ?? '-'}</td>
-          <td class="py-1.5 pr-3">
-            ${w.status ? `<span class="inline-flex items-center gap-1.5"><span class="w-2 h-2 rounded-full ${getStatusBgColor(w.status)}"></span><span class="${getStatusColor(w.status)} capitalize">${escapeHtmlAttr(w.status)}</span></span>` : '-'}
-          </td>
-          <td class="py-1.5 pr-3" title="${w.lastSeen ? formatUnixSeconds(w.lastSeen) : ''}">${w.lastSeen ? formatRelativeTime(w.lastSeen) : '-'}</td>
-          <td class="py-1.5 pr-3">${w.sessionUptime != null ? formatUptime(w.sessionUptime) : '-'}</td>
-        `;
-        workersBody.appendChild(tr);
-      });
-
-      updateBlocksChartFromBlocks(blocks, (cached.stats.blocks || []).length, filter);
+      renderDashboardTables(cached.stats);
 
       return;
     }
 
     setLastUpdated(0, false);
   } finally {
+    refreshInFlight = false;
     loader.style.display = 'none';
   }
 }
@@ -1390,108 +1305,7 @@ setInterval(() => {
   document.getElementById('networkDifficulty').textContent = formatDifficulty(cached.stats.networkDifficulty);
   document.getElementById('networkBlockCount').textContent = cached.stats.networkBlockCount ?? '-';
 
-  const filter = getWalletFilter();
-  const dayFilter = getBlocksDayFilter();
-
-  renderWalletSummary(cached.stats, filter);
-
-  let blocks = (cached.stats.blocks || []).filter(b => !filter || (b.wallet || '').includes(filter));
-  blocks = filterBlocksByDays(blocks, dayFilter);
-  lastFilteredBlocks = blocks;
-  const blocksBody = document.getElementById('blocksBody');
-  blocksBody.innerHTML = '';
-  blocks.forEach((b, idx) => {
-    const nonceInfo = formatNonceInfo(b.nonce);
-    const hashFull = b.hash || '';
-    const hashShort = shortHash(hashFull);
-    const workerDisplay = displayWorkerName(b.worker);
-    const tr = document.createElement('tr');
-    tr.className = 'border-b border-card/50 cursor-pointer';
-    tr.setAttribute('data-row-kind', 'block');
-    tr.setAttribute('data-row-index', String(idx));
-    tr.innerHTML = `
-      <td class="py-1.5 pr-3" title="${b.timestamp || ''}">${formatUnixSeconds(b.timestamp)}</td>
-      <td class="py-1.5 pr-3" title="${escapeHtmlAttr(b.instance || '')}">${b.instance || '-'}</td>
-      <td class="py-1.5 pr-3" title="${escapeHtmlAttr(b.bluescore || '')}">${b.bluescore || '-'}</td>
-      <td class="py-1.5 pr-3" title="${escapeHtmlAttr(workerDisplay)}">${escapeHtmlAttr(workerDisplay)}</td>
-      <td class="py-1.5 pr-3">
-        <div class="flex items-center gap-2 min-w-0">
-          <span class="min-w-0 truncate" title="${escapeHtmlAttr(b.wallet || '')}">${escapeHtmlAttr(b.wallet || '-')}</span>
-          ${b.wallet ? `<button type="button" class="bg-surface-1 border border-card px-2 py-0.5 rounded text-xs hover:border-kaspa-primary shrink-0" data-copy-text="${escapeHtmlAttr(b.wallet)}">Copy</button>` : ''}
-        </div>
-      </td>
-      <td class="py-1.5 pr-3 font-mono" title="${escapeHtmlAttr(nonceInfo.title)}">${nonceInfo.display || '-'}</td>
-      <td class="py-1.5 pr-3">
-        <div class="flex items-center gap-2 min-w-0">
-          <span class="font-mono min-w-0 truncate" title="${hashFull}">${hashShort}</span>
-          ${hashFull ? `<button type="button" class="bg-surface-1 border border-card px-2 py-0.5 rounded text-xs hover:border-kaspa-primary shrink-0" data-copy-text="${escapeHtmlAttr(hashFull)}">Copy</button>` : ''}
-        </div>
-      </td>
-    `;
-    blocksBody.appendChild(tr);
-  });
-
-  const allWorkers = cached.stats.workers || [];
-  const existingOrder = readWorkerOrder();
-  const orderedWorkers = maintainWorkerOrder(existingOrder, allWorkers);
-  const workers = orderedWorkers.filter(w => !filter || (w.wallet || '').includes(filter));
-  lastFilteredWorkers = workers;
-  const workersBody = document.getElementById('workersBody');
-  workersBody.innerHTML = '';
-  lastInternalCpuWorker = null;
-
-  // Show filter indicator if wallet filter is active
-  const workersTable = document.querySelector('[data-workers-table]');
-  if (workersTable) {
-    const filterIndicator = workersTable.querySelector('.wallet-filter-indicator');
-    if (filter) {
-      if (!filterIndicator) {
-        const indicator = document.createElement('div');
-        indicator.className = 'wallet-filter-indicator bg-yellow-900/20 border border-yellow-700/50 rounded-lg px-3 py-2 mb-3 text-sm text-yellow-300';
-        indicator.innerHTML = `
-          <div class="flex items-center justify-between gap-3">
-            <span>⚠️ Showing ${workers.length} of ${allWorkers.length} workers (filtered by wallet)</span>
-            <button type="button" class="text-yellow-300 hover:text-yellow-200 underline text-xs" onclick="document.getElementById('walletClearBtn')?.click()">Clear filter</button>
-          </div>
-        `;
-        workersTable.insertBefore(indicator, workersTable.firstChild);
-      } else {
-        filterIndicator.querySelector('span').textContent = `⚠️ Showing ${workers.length} of ${allWorkers.length} workers (filtered by wallet)`;
-      }
-    } else if (filterIndicator) {
-      filterIndicator.remove();
-    }
-  }
-
-  workers.forEach((w, idx) => {
-    const tr = document.createElement('tr');
-    tr.className = 'border-b border-card/50 cursor-pointer';
-    tr.setAttribute('data-row-kind', 'worker');
-    tr.setAttribute('data-row-index', String(idx));
-    const workerDisplay = displayWorkerName(w.worker);
-    tr.innerHTML = `
-      <td class="py-1.5 pr-3" title="${escapeHtmlAttr(w.instance || '')}">${w.instance || '-'}</td>
-      <td class="py-1.5 pr-3" title="${escapeHtmlAttr(workerDisplay)}">${escapeHtmlAttr(workerDisplay || '-')}</td>
-      <td class="py-1.5 pr-3">
-        <div class="flex items-center gap-2 min-w-0">
-          <span class="min-w-0 truncate" title="${escapeHtmlAttr(w.wallet || '')}">${escapeHtmlAttr(w.wallet || '-')}</span>
-          ${w.wallet ? `<button type="button" class="bg-surface-1 border border-card px-2 py-0.5 rounded text-xs hover:border-kaspa-primary shrink-0" data-copy-text="${String(w.wallet).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;')}">Copy</button>` : ''}
-        </div>
-      </td>
-      <td class="py-1.5 pr-3">${formatHashrateHs((w.hashrate || 0) * 1e9)}</td>
-      <td class="py-1.5 pr-3">${w.shares ?? '-'}</td>
-      <td class="py-1.5 pr-3">${w.stale ?? '-'}</td>
-      <td class="py-1.5 pr-3">${w.invalid ?? '-'}</td>
-      <td class="py-1.5 pr-3">${w.blocks ?? '-'}</td>
-      <td class="py-1.5 pr-3">
-        ${w.status ? `<span class="inline-flex items-center gap-1.5"><span class="w-2 h-2 rounded-full ${getStatusBgColor(w.status)}"></span><span class="${getStatusColor(w.status)} capitalize">${escapeHtmlAttr(w.status)}</span></span>` : '-'}
-      </td>
-      <td class="py-1.5 pr-3" title="${w.lastSeen ? formatUnixSeconds(w.lastSeen) : ''}">${w.lastSeen ? formatRelativeTime(w.lastSeen) : '-'}</td>
-    `;
-    workersBody.appendChild(tr);
-  });
-
-  updateBlocksChartFromBlocks(blocks, (cached.stats.blocks || []).length, filter);
+  renderDashboardTables(cached.stats);
 })();
 initCollapsibles();
 refresh();

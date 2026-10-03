@@ -207,6 +207,7 @@ async fn main() -> Result<(), anyhow::Error> {
     // instead of having the server re-read `config.yaml` from disk.
     // This is best-effort and does not affect any mining logic.
     prom::set_web_status_config(config.global.kaspad_address.clone(), config.instances.len());
+    prom::set_web_mining_config(&config);
     // Point the web config endpoint at the actual config file path the bridge is using.
     let loaded_config_path = CONFIG_LOADED_FROM.get().and_then(|p| p.as_ref()).cloned().unwrap_or_else(|| requested_config.clone());
     prom::set_web_config_path(loaded_config_path);
@@ -408,7 +409,32 @@ async fn main() -> Result<(), anyhow::Error> {
         let instance_num = idx + 1;
         let instance = instance_config.clone();
         let global = config.global.clone();
-        let kaspa_api_clone = Arc::clone(&kaspa_api);
+        let kaspa_api_clone = if let Some(mode) = instance.mining_mode {
+            use kaspa_stratum_bridge::parent::MiningMode;
+            let parent = match mode {
+                MiningMode::Native => {
+                    anyhow::ensure!(instance.parent.is_none(), "native port must not configure a parent");
+                    None
+                }
+                _ => {
+                    let parent =
+                        instance.parent.clone().ok_or_else(|| anyhow::anyhow!("merged port requires parent configuration"))?;
+                    anyhow::ensure!(parent.kind == mode, "port mode and parent kind disagree");
+                    parent.validate()?;
+                    Some(parent)
+                }
+            };
+            KaspaApi::new_with_parent(
+                global.kaspad_address.clone(),
+                global.coinbase_tag_suffix.clone(),
+                shutdown_rx.clone(),
+                None,
+                parent,
+            )
+            .await?
+        } else {
+            Arc::clone(&kaspa_api)
+        };
         let instance_shutdown_rx = shutdown_rx.clone();
 
         let is_first_instance = idx == 0;
@@ -454,12 +480,13 @@ async fn main() -> Result<(), anyhow::Error> {
                 // Standalone binary is not fronted by the fly edge.
                 proxy_protocol: false,
                 kaspa_common_protocol: instance.kaspa_common_protocol,
+                extranonce_with_size: instance.extranonce_with_size,
             };
 
             listen_and_serve_with_shutdown(
                 bridge_config,
                 Arc::clone(&kaspa_api_clone),
-                if is_first_instance { Some(kaspa_api_clone) } else { None },
+                if is_first_instance || instance.mining_mode.is_some() { Some(kaspa_api_clone) } else { None },
                 instance_shutdown_rx,
             )
             .await

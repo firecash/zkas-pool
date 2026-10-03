@@ -184,6 +184,37 @@ pub fn diff_to_hash(diff: f64) -> f64 {
     hash_val / BIG_GIG
 }
 
+/// Do not ask miners to discard hashes that solve either chain. Round the cap
+/// down to a power of two to avoid floating-point boundary losses.
+pub fn cap_share_difficulty(requested: f64, easiest_network_target: &BigUint) -> f64 {
+    if easiest_network_target.is_zero() {
+        return requested;
+    }
+    let limit = 2_f64.powi(224) / easiest_network_target.to_f64().unwrap_or(f64::MAX);
+    let mut cap = 2_f64.powf(limit.log2().floor());
+    while diff_to_target_standard(cap) < *easiest_network_target {
+        cap /= 2.0;
+    }
+    requested.min(cap)
+}
+
+#[cfg(test)]
+mod multimining_difficulty_tests {
+    use super::*;
+    #[test]
+    fn shares_cover_both_target_orders() {
+        let a = calculate_target(0x1e21bc1c);
+        let b = calculate_target(0x1f4ee5fb);
+        for (child, parent) in [(&a, &b), (&b, &a)] {
+            let easiest = child.max(parent);
+            let diff = cap_share_difficulty(8192.0, easiest);
+            assert!(diff_to_target_standard(diff) >= *child);
+            assert!(diff_to_target_standard(diff) >= *parent);
+            assert_eq!(cap_share_difficulty(diff / 2.0, easiest), diff / 2.0);
+        }
+    }
+}
+
 /// Serialize block header for mining
 /// This creates the pre-PoW hash (hash WITHOUT timestamp and nonce)
 /// Uses kaspa_hashes::BlockHash to match the working stratum implementation

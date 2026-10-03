@@ -376,6 +376,21 @@ impl StratumListener {
                     last_activity = tokio::time::Instant::now();
                     debug!("[CLIENT_LISTENER] Read {} bytes from {}:{}", n, ctx.remote_addr, ctx.remote_port);
 
+                    // TLS probing must fail promptly on a plaintext listener.
+                    // Waiting for a JSON newline consumes the pool checker's
+                    // deadline before it can retry plain Stratum. The TLS
+                    // handshake record byte cannot start a JSON-RPC message;
+                    // inspect it before null stripping/UTF-8 conversion, even
+                    // when the ClientHello arrives one byte at a time.
+                    if first_message && buffer[0] == 0x16 {
+                        info!(
+                            "[CONNECTION] TLS probe on plaintext Stratum port from {}:{}; closing",
+                            ctx.remote_addr, ctx.remote_port
+                        );
+                        ctx.disconnect();
+                        break;
+                    }
+
                     // Remove null bytes and process
                     let data: Vec<u8> = buffer[..n].iter().copied().filter(|&b| b != 0).collect();
 
@@ -1136,6 +1151,69 @@ mod proxy_protocol_tests {
     async fn rejects_non_proxy_stream() {
         let mut cursor = b"{\"id\":1,\"method\":\"mining.subscribe\"}\n".as_slice();
         assert!(read_proxy_v2_source(&mut cursor).await.is_err());
+    }
+}
+
+#[cfg(test)]
+mod plaintext_probe_tests {
+    use super::*;
+    use crate::{anti_abuse::AntiAbuseConfig, mining_state::MiningState};
+    use tokio::io::AsyncWriteExt;
+    use tokio::time::{Duration, timeout};
+
+    async fn connected_peer() -> (Arc<StratumContext>, tokio::net::TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let peer = tokio::net::TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+        let (server, remote) = listener.accept().await.unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let ctx = StratumContext::new(
+            remote.ip().to_string(),
+            remote.port(),
+            listener.local_addr().unwrap().port(),
+            server,
+            Arc::new(MiningState::new()),
+            tx,
+        );
+        (ctx, peer)
+    }
+
+    #[tokio::test]
+    async fn tls_probe_closes_without_waiting_for_newline_or_rest_of_header() {
+        for payload in [&b"\x16"[..], &b"\x16\x03\x01\x01\x20\x01\x00"[..]] {
+            let (ctx, mut peer) = connected_peer().await;
+            let handlers = Arc::new(HashMap::new());
+            let guard = Arc::new(AntiAbuseGuard::new(AntiAbuseConfig::unlimited()));
+            let task = tokio::spawn(async move {
+                StratumListener::spawn_client_listener(ctx, &handlers, &guard, "tls-probe-test").await;
+            });
+            peer.write_all(payload).await.unwrap();
+            let mut byte = [0];
+            assert_eq!(timeout(Duration::from_secs(1), peer.read(&mut byte)).await.unwrap().unwrap(), 0);
+            timeout(Duration::from_secs(1), task).await.unwrap().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn fragmented_plaintext_subscribe_still_reaches_handler() {
+        let (ctx, mut peer) = connected_peer().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let handler: EventHandler = Arc::new(move |_ctx, event| {
+            tx.send(event).unwrap();
+            Box::pin(async { Ok(()) })
+        });
+        let handlers = Arc::new(HashMap::from([("mining.subscribe".to_string(), handler)]));
+        let guard = Arc::new(AntiAbuseGuard::new(AntiAbuseConfig::unlimited()));
+        let _ticket = guard.try_accept_connection(ctx.remote_addr.parse().unwrap(), std::time::Instant::now()).unwrap();
+        let task = tokio::spawn(async move {
+            StratumListener::spawn_client_listener(ctx, &handlers, &guard, "plain-probe-test").await;
+        });
+        peer.write_all(b"{").await.unwrap();
+        tokio::task::yield_now().await;
+        peer.write_all(b"\"id\":1,\"method\":\"mining.subscribe\",\"params\":[]}\n").await.unwrap();
+        let event = timeout(Duration::from_secs(1), rx.recv()).await.unwrap().unwrap();
+        assert_eq!(event.method, "mining.subscribe");
+        drop(peer);
+        timeout(Duration::from_secs(1), task).await.unwrap().unwrap();
     }
 }
 

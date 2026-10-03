@@ -1,6 +1,7 @@
 pub mod anti_abuse;
 pub mod app_config;
 pub mod client_handler;
+mod dashboard_hashrate;
 pub mod default_client;
 pub mod errors;
 pub mod hasher;
@@ -35,3 +36,6 @@ pub use stratum_context::*;
 pub use stratum_listener::*;
 pub use stratum_server::BridgeConfig as StratumServerBridgeConfig;
 pub use stratum_server::*;
+
+pub mod mining_ui;
+pub mod parent;

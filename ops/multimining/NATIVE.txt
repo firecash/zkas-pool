@@ -1,0 +1,12 @@
+NATIVE ZKAS MINING — no consensus changes
+
+An instance configured with mining_mode: native hashes the original ZKas
+template directly. Legacy merged ports also fall back to genuine native work
+when their real parent is unavailable. Synthetic parents are test fixtures only.
+Old merged jobs retain their independent commitment and settlement lifecycle.
+
+Build: cargo build --locked -p kaspa-stratum-bridge --bin stratum-bridge
+Tests: cargo test --locked -p kaspa-stratum-bridge --all-targets
+Example: ops/multimining/devnet.example.json uses only loopback listeners.
+Supply your own disposable ZKas devnet address as the Stratum username;
+use password x. Bootstrap only your own isolated development network.

@@ -1,0 +1,10 @@
+LOW-DIFFICULTY PARENT TARGETS
+
+Each share target must cover the easier of the child and parent network targets.
+Otherwise a miner discards hashes that are valid blocks on one of the chains.
+The bridge caps share difficulty conservatively, including fractional difficulty,
+before storing a job. This applies to initial jobs, refreshes and vardiff updates.
+Per-job difficulty is preserved for late submissions.
+
+Tests cover both parent/child target orders. The correction is chain-independent;
+the configured parent remains Kaspa. No node consensus changes are needed.

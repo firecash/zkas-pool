@@ -12,6 +12,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::app_config::BridgeConfig;
+use crate::dashboard_hashrate::{RollingHashrate, WINDOW_SECONDS};
 use crate::net_utils::bind_addr_from_port;
 use std::path::PathBuf;
 
@@ -110,6 +111,7 @@ static WORKER_LAST_ACTIVITY: OnceLock<parking_lot::Mutex<HashMap<String, Instant
 
 /// Bridge start time - tracks when the bridge started (for uptime calculation)
 static BRIDGE_START_TIME: OnceLock<Instant> = OnceLock::new();
+static DASHBOARD_HASHRATE: OnceLock<parking_lot::Mutex<RollingHashrate>> = OnceLock::new();
 
 // ---------------------------
 // Internal CPU miner metrics (feature-gated)
@@ -133,6 +135,8 @@ const INTERNAL_CPU_RECENT_BLOCKS_LIMIT: usize = 256;
 pub fn init_metrics() {
     // Record bridge start time for uptime calculation
     BRIDGE_START_TIME.get_or_init(Instant::now);
+    let _ = dashboard_history();
+    DASHBOARD_HASHRATE.get_or_init(|| parking_lot::Mutex::new(RollingHashrate::new(8192)));
     SHARE_COUNTER.get_or_init(|| {
         register_counter_vec!("ks_valid_share_counter", "Number of shares found by worker over time", WORKER_LABELS).unwrap()
     });
@@ -507,6 +511,25 @@ async fn handle_http_request(
         return Ok(());
     }
 
+    if request.starts_with("GET ") && path == "/api/mining" {
+        let options = WEB_MINING_CONNECTIONS.get().cloned().unwrap_or_default();
+        let options: Vec<_> = options
+            .into_iter()
+            .filter(|entry| match mode {
+                HttpMode::Aggregated { .. } => true,
+                HttpMode::Instance { instance_id, .. } => entry.instance == *instance_id,
+            })
+            .collect();
+        let json = serde_json::to_string(&options)?;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: {}\r\n\r\n{}",
+            json.len(),
+            json
+        );
+        stream.write_all(response.as_bytes()).await?;
+        return Ok(());
+    }
+
     if request.starts_with("GET /api/status") {
         let kaspad_version = crate::kaspaapi::NODE_STATUS.lock().server_version.clone().unwrap_or_else(|| "-".to_string());
         let status_cfg = get_web_status_config();
@@ -691,9 +714,9 @@ pub fn worker_context(instance_id: &str, ctx: &crate::stratum_context::StratumCo
         miner: miner.into(),
         wallet: ctx.wallet_addr.lock().clone(),
         // Address only -- never the ephemeral source port. The port makes every
-            // reconnect a brand-new, permanent time series, and nothing ever removes
-            // them: 307 workers had grown 267k series and 1.7 GB of RSS.
-            ip: ctx.remote_addr().to_string(),
+        // reconnect a brand-new, permanent time series, and nothing ever removes
+        // them: 307 workers had grown 267k series and 1.7 GB of RSS.
+        ip: ctx.remote_addr().to_string(),
     }
 }
 
@@ -755,6 +778,11 @@ pub fn record_block_not_confirmed_blue(worker: &WorkerContext) {
 
 /// Record a valid share found
 pub fn record_share_found(worker: &WorkerContext, share_diff: f64) {
+    // share_diff is credited work in gigahashes, including the job's actual target.
+    if let (Some(start), Some(rates)) = (BRIDGE_START_TIME.get(), DASHBOARD_HASHRATE.get()) {
+        let key = format!("{}:{}:{}", worker.instance_id, worker.worker_name, worker.wallet);
+        rates.lock().record(key, start.elapsed().as_secs_f64(), share_diff);
+    }
     if let Some(counter) = SHARE_COUNTER.get() {
         counter.with_label_values(&worker.labels()).inc();
     }
@@ -882,6 +910,11 @@ struct WebStatusConfig {
 }
 
 static WEB_STATUS_CONFIG: OnceLock<parking_lot::RwLock<WebStatusConfig>> = OnceLock::new();
+static WEB_MINING_CONNECTIONS: OnceLock<Vec<crate::mining_ui::MiningConnection>> = OnceLock::new();
+
+pub fn set_web_mining_config(config: &BridgeConfig) {
+    let _ = WEB_MINING_CONNECTIONS.set(crate::mining_ui::connections(config));
+}
 static WEB_CONFIG_PATH: OnceLock<PathBuf> = OnceLock::new();
 static WEB_CONFIG_WRITE_LOCK: OnceLock<parking_lot::Mutex<()>> = OnceLock::new();
 
@@ -1056,6 +1089,8 @@ struct StatsResponse {
     totalBlocks: u64,
     totalShares: u64,
     networkHashrate: u64,
+    poolHashrate: f64, // H/s; sum of current worker rates, independent of table pagination
+    hashrateWindowSeconds: u64,
     networkDifficulty: f64,
     networkBlockCount: u64,
     activeWorkers: usize,
@@ -1066,7 +1101,7 @@ struct StatsResponse {
     bridgeUptime: Option<u64>, // Bridge uptime in seconds
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct BlockInfo {
     instance: String,
     worker: String,
@@ -1095,6 +1130,52 @@ struct WorkerInfo {
     current_difficulty: Option<f64>, // Current mining difficulty assigned to this worker
     #[serde(skip_serializing_if = "Option::is_none", rename = "sessionUptime")]
     session_uptime: Option<u64>, // Session uptime in seconds (time since last connection)
+}
+
+/// Optional immutable dashboard history imported at process start. Historical
+/// shares are counters only: they never contribute to current rolling hashrate.
+#[derive(Default, Deserialize)]
+struct DashboardHistory {
+    #[serde(default)]
+    blocks: Vec<BlockInfo>,
+    #[serde(default)]
+    shares_by_instance: HashMap<String, u64>,
+}
+
+static DASHBOARD_HISTORY: OnceLock<DashboardHistory> = OnceLock::new();
+
+fn dashboard_history() -> &'static DashboardHistory {
+    DASHBOARD_HISTORY.get_or_init(|| {
+        let Some(path) = std::env::var_os("RKSTRATUM_DASHBOARD_HISTORY") else {
+            return DashboardHistory::default();
+        };
+        match std::fs::read(path)
+            .map_err(anyhow::Error::from)
+            .and_then(|data| serde_json::from_slice::<DashboardHistory>(&data).map_err(anyhow::Error::from))
+        {
+            Ok(history) => history,
+            Err(error) => {
+                tracing::warn!("Dashboard history unavailable: {error}");
+                DashboardHistory::default()
+            }
+        }
+    })
+}
+
+fn merge_dashboard_history(stats: &mut StatsResponse, history: &DashboardHistory, instance_id: Option<&str>) {
+    let mut seen: HashSet<String> = stats.blocks.iter().map(|b| b.hash.clone()).collect();
+    for block in &history.blocks {
+        if instance_id.is_some_and(|id| id != block.instance) || block.hash.is_empty() || !seen.insert(block.hash.clone()) {
+            continue;
+        }
+        stats.blocks.push(block.clone());
+        stats.totalBlocks = stats.totalBlocks.saturating_add(1);
+    }
+    for (instance, shares) in &history.shares_by_instance {
+        if instance_id.is_none_or(|id| id == instance) {
+            stats.totalShares = stats.totalShares.saturating_add(*shares);
+        }
+    }
 }
 
 fn parse_worker_labels(labels: &[prometheus::proto::LabelPair]) -> (String, String, String) {
@@ -1147,6 +1228,8 @@ async fn get_stats_json_filtered(instance_id: Option<&str>) -> StatsResponse {
         totalBlocks: 0,
         totalShares: 0,
         networkHashrate: 0,
+        poolHashrate: 0.0,
+        hashrateWindowSeconds: WINDOW_SECONDS,
         networkDifficulty: 0.0,
         networkBlockCount: 0,
         activeWorkers: 0,
@@ -1157,7 +1240,6 @@ async fn get_stats_json_filtered(instance_id: Option<&str>) -> StatsResponse {
     };
 
     let mut worker_stats: HashMap<String, WorkerInfo> = HashMap::new();
-    let mut worker_hash_values: HashMap<String, f64> = HashMap::new(); // Store hash values for hashrate calculation
     let mut worker_start_times: HashMap<String, f64> = HashMap::new(); // Store start times for hashrate calculation
     let mut worker_difficulties: HashMap<String, f64> = HashMap::new(); // Store current difficulty for each worker
     let mut block_set: HashSet<String> = HashSet::new();
@@ -1310,16 +1392,13 @@ async fn get_stats_json_filtered(instance_id: Option<&str>) -> StatsResponse {
             }
         }
 
-        // Parse share diff counter (for hashrate calculation)
+        // Ensure all credited workers appear, even when the rolling window has expired.
         if name == "ks_valid_share_diff_counter" {
             for metric in family.get_metric() {
                 let (instance, worker_key, wallet) = parse_worker_labels(metric.get_label());
 
                 if !worker_key.is_empty() {
                     let key = format!("{}:{}:{}", instance, worker_key, wallet);
-                    let total_hash_value = metric.get_counter().value();
-                    // Store hash value for hashrate calculation (aggregate across label variants)
-                    *worker_hash_values.entry(key.clone()).or_insert(0.0) += total_hash_value;
                     // Ensure worker exists in stats
                     worker_stats.entry(key.clone()).or_insert_with(|| new_worker_info(instance, worker_key, wallet));
                 }
@@ -1417,24 +1496,18 @@ async fn get_stats_json_filtered(instance_id: Option<&str>) -> StatsResponse {
         }
     }
 
-    // Calculate hashrate for workers using share_diff_counter and start_time
-    let current_time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as f64;
-
+    // One common rolling window prevents reconnects and old session downtime
+    // from distorting either individual workers or the aggregate pool rate.
+    let rates = match (BRIDGE_START_TIME.get(), DASHBOARD_HASHRATE.get()) {
+        (Some(start), Some(rates)) => rates.lock().rates(start.elapsed().as_secs_f64()),
+        _ => HashMap::new(),
+    };
     let mut total_worker_hashrate_ghs = 0.0;
-
-    // Calculate hashrate for each worker
     for (key, worker) in worker_stats.iter_mut() {
-        if let (Some(&total_hash_value), Some(&start_time_secs)) = (worker_hash_values.get(key), worker_start_times.get(key)) {
-            let elapsed = current_time - start_time_secs;
-            // Calculate hashrate: total_hash_value / elapsed_time (in GH/s)
-            // Matches console stats: hashrate = shares_diff / elapsed
-            // Formula: hashrate = total_hash_value / elapsed (already in GH/s units)
-            if elapsed > 0.0 && total_hash_value > 0.0 {
-                worker.hashrate = total_hash_value / elapsed;
-                total_worker_hashrate_ghs += worker.hashrate;
-            }
-        }
+        worker.hashrate = rates.get(key).copied().unwrap_or(0.0);
+        total_worker_hashrate_ghs += worker.hashrate;
     }
+    stats.poolHashrate = (total_worker_hashrate_ghs + stats.internalCpu.as_ref().map(|c| c.hashrateGhs).unwrap_or(0.0)) * 1e9;
 
     // If network hashrate is 0 or unavailable, use total worker hashrate as fallback
     // Convert from GH/s to H/s for network hashrate display
@@ -1560,6 +1633,8 @@ async fn get_stats_json_filtered(instance_id: Option<&str>) -> StatsResponse {
             }
         }
     }
+
+    merge_dashboard_history(&mut stats, dashboard_history(), instance_id);
 
     // Sort blocks by bluescore (newest first)
     stats.blocks.sort_by(|a, b| {
@@ -1738,6 +1813,62 @@ pub async fn start_prom_server(port: &str, instance_id: &str) -> Result<(), Box<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn history_deduplicates_filters_and_never_changes_current_hashrate() {
+        let mut stats = get_stats_json_filtered(Some("history-fixture-unused")).await;
+        let block = |instance: &str, hash: &str| BlockInfo {
+            instance: instance.into(),
+            hash: hash.into(),
+            worker: "fixture".into(),
+            wallet: "fixture".into(),
+            timestamp: "1".into(),
+            nonce: "0".into(),
+            bluescore: "1".into(),
+        };
+        stats.blocks.push(block("a", "same"));
+        stats.totalBlocks = 1;
+        let history = DashboardHistory {
+            blocks: vec![block("a", "same"), block("a", "new"), block("a", "new"), block("b", "other")],
+            shares_by_instance: HashMap::from([("a".into(), 10), ("b".into(), 20)]),
+        };
+        merge_dashboard_history(&mut stats, &history, Some("a"));
+        assert_eq!(stats.totalBlocks, 2);
+        assert_eq!(stats.blocks.len(), 2);
+        assert_eq!(stats.totalShares, 10);
+        assert_eq!(stats.poolHashrate, 0.0);
+        assert!(stats.workers.is_empty());
+        let mut all = get_stats_json_filtered(Some("history-fixture-unused")).await;
+        merge_dashboard_history(&mut all, &history, None);
+        assert_eq!(all.totalBlocks, 3);
+        assert_eq!(all.totalShares, 30);
+    }
+
+    #[tokio::test]
+    async fn dashboard_rates_merge_label_variants_and_filter_instances() {
+        init_metrics();
+        let worker = WorkerContext {
+            instance_id: "rolling-api-fixture".into(),
+            worker_name: "rig".into(),
+            miner: "fixture".into(),
+            wallet: "fixture-wallet".into(),
+            ip: "127.0.0.1".into(),
+        };
+        record_share_found(&worker, 10.0);
+        let variant = WorkerContext { ip: "127.0.0.2".into(), ..worker };
+        record_share_found(&variant, 90.0);
+        let stats = get_stats_json_filtered(Some("rolling-api-fixture")).await;
+        assert_eq!(stats.workers.len(), 1);
+        assert_eq!(stats.totalShares, 2);
+        assert_eq!(stats.workers[0].shares, 2);
+        assert!(stats.workers[0].hashrate > 0.0);
+        assert!((stats.poolHashrate - stats.workers[0].hashrate * 1e9).abs() < 1e-3);
+        assert_eq!(stats.hashrateWindowSeconds, 300);
+        let other = get_stats_json_filtered(Some("rolling-api-unrelated")).await;
+        assert_eq!(other.poolHashrate, 0.0);
+        assert!(other.workers.is_empty());
+    }
+
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::io::AsyncReadExt;
@@ -1779,7 +1910,10 @@ min_share_diff: 8192
 
         set_web_status_config("127.0.0.1:16110".to_string(), 2);
 
-        let mode = HttpMode::Instance { instance_id: "0".to_string(), web_bind: "127.0.0.1:0".to_string() };
+        let mode = HttpMode::Instance {
+            instance_id: crate::log_colors::LogColors::format_instance_id(1),
+            web_bind: "127.0.0.1:0".to_string(),
+        };
 
         let status_resp = send_request(mode.clone(), "GET /api/status HTTP/1.1\r\n\r\n").await;
         assert!(status_resp.contains("200 OK"));
@@ -1789,6 +1923,16 @@ min_share_diff: 8192
         let stats_resp = send_request(mode.clone(), "GET /api/stats HTTP/1.1\r\n\r\n").await;
         assert!(stats_resp.contains("200 OK"));
         assert!(stats_resp.contains("application/json"));
+
+        let mining_config = BridgeConfig::from_yaml(include_str!("../../ops/multimining/devnet.example.json")).unwrap();
+        set_web_mining_config(&mining_config);
+        let mining_resp = send_request(mode.clone(), "GET /api/mining HTTP/1.1\r\n\r\n").await;
+        let mining: serde_json::Value = serde_json::from_str(mining_resp.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(mining.as_array().unwrap().len(), 1);
+        assert_eq!(mining[0]["mode"], "native");
+        let all_resp = send_request(HttpMode::Aggregated { web_bind: "127.0.0.1:0".into() }, "GET /api/mining HTTP/1.1\r\n\r\n").await;
+        let all: serde_json::Value = serde_json::from_str(all_resp.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(all.as_array().unwrap().len(), 1);
 
         let config_resp = send_request(mode.clone(), "GET /api/config HTTP/1.1\r\n\r\n").await;
         assert!(config_resp.contains("200 OK"));

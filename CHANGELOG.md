@@ -10,6 +10,25 @@ backward-incompatible ways at every minor bump.
 
 ## [Unreleased]
 
+### Added
+
+- Explicit native ZKas mining and per-listener Kaspa parent configuration, with
+  dashboard connection settings for both modes and isolated browser fixtures.
+- Paginated block and worker tables, five-minute difficulty-weighted hashrate,
+  and optional deduplicated dashboard history import across restarts.
+
+### Fixed
+
+- Use genuine native templates instead of synthetic AuxPoW parents when mining
+  without a real parent; leave node consensus and block validation unchanged.
+- Preserve solutions meeting either network target by capping initial and updated
+  share difficulty against the easier child/parent target, including values below one.
+- Keep Kaspa parent RPC payout handling independent of the child network's address
+  parsing while validating payout checksums and network prefixes.
+- Retain JSON-RPC response fields and support rental-proxy login/notification
+  envelopes; promptly close TLS probes sent to plaintext listeners.
+
+
 ## [0.1.0] - 2026-08-30
 
 First tagged release. The pool has been serving production since 2026-08-24;

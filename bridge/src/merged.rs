@@ -14,10 +14,8 @@
 //!   acceptance). Because the aux rides `RpcRawHeader.aux_pow`, the existing
 //!   `(&block).into()` submit path transmits it unchanged.
 //!
-//! In this first version the parent is synthetic (self-generated), which proves the
-//! ASIC→aux path end to end. Swapping the synthetic parent for a live Kaspa
-//! `getBlockTemplate` (and also submitting winning parents to Kaspa) is what adds the
-//! second-chain reward — the struct is identical, only the parent's source changes.
+//! Production uses real Kaspa parents when available and native ZKas otherwise.
+//! The synthetic parent builder is retained only as a unit-test fixture.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -64,6 +62,7 @@ pub fn coinbase_merkle_branch(txs: &[Transaction]) -> Vec<Hash> {
 
 /// Build the parent block an ASIC hashes in merged mode: one coinbase committing to
 /// `H_fc`, with the ZKas target. Returns `(parent_block, h_fc)`.
+#[cfg(test)]
 pub fn build_parent_block(fc_block: &Block) -> (Block, Hash) {
     let h_fc = fc_block.header.hash;
     let coinbase = Transaction::new(0, vec![], vec![], 0, SUBNETWORK_ID_COINBASE, 0, AuxPow::embed_commitment(&[], h_fc, &[]));

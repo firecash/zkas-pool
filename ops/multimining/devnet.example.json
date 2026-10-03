@@ -1,0 +1,30 @@
+{
+  "kaspad_address": "127.0.0.1:28610",
+  "block_wait_time": 1000,
+  "log_to_file": false,
+  "print_stats": false,
+  "var_diff": false,
+  "pow2_clamp": false,
+  "extranonce_size": 2,
+  "web_dashboard_port": "",
+  "instances": [
+    {
+      "stratum_port": "127.0.0.1:5555",
+      "min_share_diff": 1e-05,
+      "mining_mode": "native",
+      "extranonce_size": 2
+    },
+    {
+      "stratum_port": "127.0.0.1:5556",
+      "min_share_diff": 1e-05,
+      "mining_mode": "kaspa",
+      "parent": {
+        "kind": "kaspa",
+        "endpoint": "127.0.0.1:28110",
+        "payout_address": "kaspadev:qqjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzg84e95fhp",
+        "allow_unsynced_private": true
+      },
+      "extranonce_size": 2
+    }
+  ]
+}

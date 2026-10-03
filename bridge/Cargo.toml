@@ -24,6 +24,9 @@ repository.workspace = true
 ignored = ["blake2", "faster-hex", "kaspa-rpc-service", "kaspad", "uuid"]
 
 [dependencies]
+kaspa-grpc-core = { git = "https://github.com/firecash/zkas-rusty", rev = "e583cbf8ac2c165df6c4faee1a0f99b3c7ed31a3" }
+tonic = { version = "0.14", features = ["transport"] }
+tokio-stream = "0.1"
 # katpool fork: shared domain types for the event-bus broadcast.
 # This is intentionally the only katpool-* dep on the vendored bridge —
 # the bridge owns protocol/PoW; the accountant owns accounting; events

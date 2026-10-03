@@ -85,9 +85,9 @@ pub struct JsonRpcResponse {
     /// ID can be null, string, or number
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    // Stratum uses the JSON-RPC v1 envelope: success includes error:null,
+    // failure includes result:null. Strict pool checkers require both keys.
     pub error: Option<Vec<Value>>,
 }
 
@@ -134,13 +134,32 @@ fn sanitize_json_input(input: &str) -> String {
 /// Unmarshal a JSON-RPC event from a string
 /// Automatically sanitizes control characters that are invalid in JSON
 pub fn unmarshal_event(input: &str) -> Result<JsonRpcEvent, serde_json::Error> {
+    fn parse(input: &str) -> Result<JsonRpcEvent, serde_json::Error> {
+        let mut value: Value = serde_json::from_str(input)?;
+        // Some rental gateways start with an XMRig-shaped login, then use
+        // ordinary Kaspa Stratum jobs/submissions. Normalize only that method;
+        // all other methods retain their array-only parameter contract.
+        if value["method"] == "login" && value["params"].is_object() {
+            let params = &value["params"];
+            let login = params["login"]
+                .as_str()
+                .ok_or_else(|| <serde_json::Error as serde::de::Error>::custom("login requires string login"))?;
+            let password = params.get("pass").cloned().unwrap_or(Value::String("x".into()));
+            let agent = params.get("agent").cloned().unwrap_or(Value::String("rental-login".into()));
+            if !password.is_string() || !agent.is_string() {
+                return Err(<serde_json::Error as serde::de::Error>::custom("login pass and agent must be strings"));
+            }
+            value["params"] = serde_json::json!([login, password, agent]);
+        }
+        serde_json::from_value(value)
+    }
     // Check if sanitization is needed
     let needs_sanitization = input.chars().any(|c| c.is_control() && c != '\n' && c != '\r');
 
     if needs_sanitization {
         let sanitized = sanitize_json_input(input);
         // Try parsing sanitized version
-        match serde_json::from_str(&sanitized) {
+        match parse(&sanitized) {
             Ok(result) => {
                 tracing::debug!("JSON input sanitized (control characters replaced with spaces)");
                 Ok(result)
@@ -153,11 +172,47 @@ pub fn unmarshal_event(input: &str) -> Result<JsonRpcEvent, serde_json::Error> {
         }
     } else {
         // No sanitization needed, parse directly
-        serde_json::from_str(input)
+        parse(input)
     }
 }
 
 /// Unmarshal a JSON-RPC response from a string
 pub fn unmarshal_response(input: &str) -> Result<JsonRpcResponse, serde_json::Error> {
     serde_json::from_str(input)
+}
+
+#[cfg(test)]
+mod response_envelope_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn rental_login_normalizes_only_valid_login_objects() {
+        let event = unmarshal_event(
+            r#"{"id":1,"method":"login","params":{"login":"wallet.worker","pass":"parent","agent":"lazypickaxe.com"}}"#,
+        )
+        .unwrap();
+        assert_eq!(event.params, vec![json!("wallet.worker"), json!("parent"), json!("lazypickaxe.com")]);
+        assert!(unmarshal_event(r#"{"id":1,"method":"login","params":{"agent":"x"}}"#).is_err());
+        assert!(unmarshal_event(r#"{"id":1,"method":"login","params":{"login":"x","pass":4}}"#).is_err());
+        assert!(unmarshal_event(r#"{"id":1,"method":"mining.submit","params":{"login":"x"}}"#).is_err());
+    }
+
+    #[test]
+    fn stratum_success_and_failure_keep_both_result_and_error_keys() {
+        let success = JsonRpcResponse::success(Some(json!(1)), json!([true, "EthereumStratum/1.0.0"]));
+        assert_eq!(
+            serde_json::to_value(success).unwrap(),
+            json!({
+                "id": 1, "result": [true, "EthereumStratum/1.0.0"], "error": null
+            })
+        );
+        let failure = JsonRpcResponse::error(Some(json!(2)), 20, "Rejected", None);
+        assert_eq!(
+            serde_json::to_value(failure).unwrap(),
+            json!({
+                "id": 2, "result": null, "error": [20, "Rejected", null]
+            })
+        );
+    }
 }

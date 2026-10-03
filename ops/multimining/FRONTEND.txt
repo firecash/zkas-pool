@@ -1,0 +1,23 @@
+MINING CONNECTION GENERATOR
+
+The dashboard advertises explicitly configured native and Kaspa instances.
+Enter a public ZKas receiving address and an optional worker name. Native uses
+password x. Kaspa merge mining uses your public Kaspa receiving address in the
+password field; this is not a wallet password. The form generates settings only;
+it stores no wallet secrets and performs no wallet operations.
+
+Use your public pool hostname when viewing through an SSH tunnel, for example
+pool.example.com. Addresses are checksum-validated before generating settings.
+GET /api/mining returns only modes, ports, instance identifiers and parent HRPs.
+Node endpoints and default receiving addresses are omitted.
+
+This preserves the existing direct/SOLO rewards and parent fee-minute policy.
+Read the pool's existing payout policy before mining; malformed backend payout
+attempts can retain the upstream fallback behavior.
+
+Tests: node --test ops/multimining/test-mining-setup.cjs
+
+Browser checks (Playwright and its Chromium browser required):
+  NODE_PATH=<playwright node_modules directory> \
+    node ops/multimining/check-dashboard.cjs
+The browser test serves synthetic fixtures on a temporary loopback port.

@@ -463,8 +463,8 @@ impl ShareHandler {
     pub fn register_client_vardiff(&self, ctx: &StratumContext, seed: f64) -> f64 {
         let stats = self.get_create_stats(ctx);
         let mut current = stats.min_diff.lock();
-        if !current.is_finite() || *current < VARDIFF_MIN_DIFF {
-            *current = seed.max(VARDIFF_MIN_DIFF);
+        if !current.is_finite() || *current <= 0.0 {
+            *current = if seed.is_finite() && seed > 0.0 { seed } else { VARDIFF_MIN_DIFF };
         }
         let restored = *current;
         drop(current);
@@ -902,16 +902,12 @@ impl ShareHandler {
                 let header_version = header_clone.version;
                 let original_timestamp = header_clone.timestamp;
                 header_clone.nonce = nonce_val;
+                header_clone.finalize();
                 let transactions_vec = current_job.block.transactions.iter().cloned().collect();
                 let block = Block::from_arcs(Arc::new(header_clone), Arc::new(transactions_vec));
 
-                let (parent_outcome, claimed_zkas) = submit_parent_then_claim_zkas(
-                    kaspa_api.as_ref(),
-                    &block,
-                    &current_job.block,
-                    meets_network_target,
-                )
-                .await;
+                let (parent_outcome, claimed_zkas) =
+                    submit_parent_then_claim_zkas(kaspa_api.as_ref(), &block, &current_job.block, meets_network_target).await;
                 // Who the KAS actually minted to, taken from the lane's recorded
                 // truth rather than re-derived: the miner set no `kaspa:` address,
                 // or this was its pool-fee minute.
@@ -2012,6 +2008,9 @@ fn format_hashrate(ghs: f64) -> String {
 // Trait for kaspa API operations
 #[async_trait::async_trait]
 pub trait KaspaApiTrait: Send + Sync {
+    fn validate_parent_payout(&self, _address: &str) -> Result<(), String> {
+        Ok(())
+    }
     async fn get_block_template(
         &self,
         wallet_addr: &str,
@@ -2021,7 +2020,7 @@ pub trait KaspaApiTrait: Send + Sync {
         generation: u64,
         // `kas_payout`: the lane's own `kaspa:` payout from the stratum password;
         // `None` pays the pool. `lane_id`: selects the lane's pool-fee minute.
-        kas_payout: Option<kaspa_addresses::Address>,
+        kas_payout: Option<String>,
         lane_id: u64,
     ) -> Result<Block, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -2078,7 +2077,7 @@ pub trait KaspaApiTrait: Send + Sync {
     async fn refresh_merged_parent(
         &self,
         _current_parent: &Block,
-        _payee: Option<kaspa_addresses::Address>,
+        _payee: Option<String>,
     ) -> Result<Option<Block>, Box<dyn std::error::Error + Send + Sync>> {
         Ok(None)
     }
@@ -2105,7 +2104,7 @@ mod merged_settlement_order_tests {
             _canxium_addr: &str,
             _session_uid: u64,
             _generation: u64,
-            _kas_payout: Option<kaspa_addresses::Address>,
+            _kas_payout: Option<String>,
             _lane_id: u64,
         ) -> Result<Block, Box<dyn std::error::Error + Send + Sync>> {
             unreachable!("template fetch is outside this regression")
@@ -2299,7 +2298,7 @@ mod event_bus_tests {
     use tokio::sync::broadcast;
 
     const SAMPLE_HASH: &str = "06acc7179752e80fa4ef421f3dd7ff5b5bda006e3fc76c14f33f324079a3a9e2";
-    const SAMPLE_WALLET: &str = "kaspa:qz4j8mu269z8llgcczmfukm9fan2fq822kzxu4cfukd5fq";
+    const SAMPLE_WALLET: &str = "kaspa:qqjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgtturx5zd";
 
     fn handler_with_bus() -> (ShareHandler, broadcast::Receiver<PoolEvent>) {
         let (tx, rx) = broadcast::channel::<PoolEvent>(POOL_EVENT_CHANNEL_CAPACITY);

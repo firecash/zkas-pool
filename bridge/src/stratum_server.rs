@@ -236,6 +236,7 @@ async fn listen_and_serve_impl<T: KaspaApiTrait + Send + Sync + 'static>(
                 as std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>>
         }) as crate::stratum_listener::EventHandler
     };
+    handlers.insert("login".to_string(), Arc::clone(&authorize_handler));
     handlers.insert("mining.authorize".to_string(), authorize_handler);
 
     // Override submit handler
