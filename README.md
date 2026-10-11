@@ -15,6 +15,11 @@ transparent UTXOs — the coinbase reward is minted as an Orchard shielded note 
 custodial mode requires a **shielded treasury** with automatic shielded payouts
 (see below).
 
+> **Security fork: mainnet DAA 6,983,500 (about 15 Oct 2026, 15:00 UTC).** Rebuild the bridge against
+> zkas-rusty `main` (01ac1865 or later; node release `zkas-v1.0.11`) before DAA 6,897,100. From the fork,
+> merged mining uses the bound `ZKM1` form, the dev fee ends and miner rewards accrue in one slot. See
+> [POOL-INTEGRATION.md](POOL-INTEGRATION.md) section 4.5 and https://zkas.info/docs/mining/#zkm1.
+
 > The internal crate and binary names are still `katpool` / `katpool-*`, inherited from
 > the upstream fork; they are not renamed to avoid churning 60+ patched `kaspa-*` deps.
 > The product is ZKas; the binary you build is `katpool`.
@@ -28,15 +33,16 @@ custodial mode requires a **shielded treasury** with automatic shielded payouts
 | Proof of Work | kHeavyHash, **byte-identical to Kaspa mainnet** |
 | Block rate | **1 BPS** (1000 ms target) |
 | Privacy | shielded-by-default — value lives in an Orchard (Halo 2) pool; the coinbase reward is minted directly as a shielded note |
-| Merged mining | with Kaspa via AuxPoW; **active from genesis** on the live network, and optional — native mining is always valid |
+| Merged mining | with Kaspa via AuxPoW; **active from genesis** on the live network, and optional — native mining is always valid; bound `ZKM1` form from DAA 6,983,500 |
 | Address HRP | `zkas:` (testnet `zkastest:`, devnet `zkasdev:`, simnet `zkassim:`) |
 | Network id | `zkas-mainnet` |
 | Default node ports | gRPC **16810**, P2P **16811** (so a ZKas node co-exists with a Kaspa node) |
 | Coinbase maturity | 100 blocks (~100 s); a shielded note becomes spendable after 600 blocks (~10 min) |
 
 **Emission.** 60 $zkas per block at launch, **halving every 3 months**. A
-consensus-enforced **5% dev fee** is appended as one extra coinbase output, so the
-finding miner receives **57 $zkas** of the initial 60 — the fee is skimmed from the
+consensus-enforced **5% dev fee** was appended as one extra coinbase output until DAA
+6,983,500 (the security fork; from then the miner keeps the whole subsidy), so the
+finding miner received **57 $zkas** of the initial 60 — the fee is skimmed from the
 subsidy, never from transaction fees. Once the curve decays below the floor (around
 month 10) a perpetual **tail** takes over: 6 $zkas/s until month 24, then **0.6 $zkas/s
 forever** (~18.9M $zkas/year).
@@ -69,7 +75,7 @@ exact file and symbol in the [node source](https://github.com/firecash/zkas-rust
 1. **The payout address is a shielded (Orchard) address, version 9.** The coinbase output
    script is a raw 43-byte address and is *not* a standard script class — drop any check
    that a coinbase output "looks like P2PK/P2SH".
-2. **The coinbase carries a mandatory dev-fee output.** Submit the node's template
+2. **Until DAA 6,983,500 the coinbase carries a mandatory dev-fee output.** Submit the node's template
    coinbase verbatim. If you cache templates and rewrite `outputs.last()`, you rewrite
    the *dev fee* and lose the block — this is the single most expensive integration bug
    (see POOL-INTEGRATION.md §3).

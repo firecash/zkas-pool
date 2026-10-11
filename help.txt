@@ -13,6 +13,14 @@ of that repository, not this one:
 
     https://github.com/firecash/zkas-rusty
 
+  Security fork: mainnet DAA 6,983,500 (about 15 Oct 2026, 15:00 UTC). Mandatory.
+  Run node zkas-v1.0.11 and a bridge built against zkas-rusty main (01ac1865 or later) before
+  DAA 6,897,100 (about 14 Oct, 13:40 UTC). From the fork: merged blocks must use the bound
+  ZKM1 form (section 4.5), the 5% dev-fee output disappears (miners keep 100%), and miner
+  rewards accrue in one slot paid as a note every ~100 DAA or on a payout-script change (read
+  pendingRecipient/pendingValue from GetShieldedCoinbaseRewards). Testnet runs these rules
+  from genesis: test there now.
+
 Read section 1 first. It is the entire integration in one page; everything
 after it is detail.
 
@@ -50,7 +58,7 @@ after it is detail.
   Halving              every 3 months
                        consensus/src/processes/coinbase.rs
                        — SUBSIDY_HALVING_INTERVAL_MONTHS = 3
-  Dev fee              5%, CONSENSUS-ENFORCED, appended as one extra coinbase
+  Dev fee              5% until DAA 6,983,500 (then 0), CONSENSUS-ENFORCED, appended as one extra coinbase
                        output. The finding miner receives 57 $zkas of the
                        initial 60. Value is conserved: the fee is skimmed from
                        the subsidy, never from transaction fees.
@@ -120,7 +128,7 @@ Exactly five things differ. Only the first three are mandatory.
         crypto/txscript/src/standard.rs  — pay_to_address_script -> pay_to_shielded_address
         crypto/txscript/src/script_class.rs — ShieldedOrchard => ScriptClass::NonStandard
 
-  (2) The coinbase carries a mandatory 5% dev-fee output. Submit the node's
+  (2) Until DAA 6,983,500 the coinbase carries a mandatory 5% dev-fee output (it ends at the fork). Submit the node's
       template coinbase VERBATIM. If you rebuild or rewrite the coinbase, you
       must reproduce the node's expected transaction byte for byte, dev-fee
       output included, or the block is rejected.
@@ -267,7 +275,7 @@ from the block hash.
      miner-writable extra_data slot — the only field you can set in a real
      Kaspa block without modifying Kaspa. Exactly once:
 
-         MERGE_MINE_MAGIC (4 bytes, ASCII "ZKMM") || H_zk (32 bytes)
+         MERGE_MINE_MAGIC (4 bytes, ASCII "ZKMM") || H_zk (32 bytes)   [before DAA 6,983,500 only; see 4.5]
 
      Duplicate or ambiguous commitments are rejected, erring safe.
        consensus/core/src/auxpow.rs — MERGE_MINE_MAGIC, embed_commitment(),
@@ -313,7 +321,7 @@ from the block hash.
  4.4 DUAL-CHAIN OPERATION
 
   To earn KAS and $zkas from one hash: pull the parent template from a real
-  Kaspa node, embed ZKMM||H_zk in its coinbase extra_data, mine it against
+  Kaspa node, embed the commitment (ZKMM||H_zk before DAA 6,983,500, ZKM1 from it, see 4.5) in its coinbase extra_data, mine it against
   ZKas's bits, and submit the solved parent to BOTH chains — to Kaspa as a
   normal block (earning KAS to your Kaspa address) and to ZKas as an aux block.
 
@@ -321,6 +329,28 @@ from the block hash.
   back to a synthetic parent so ZKas blocks keep flowing. That round earns no
   KAS but the ZKas chain stays live.
 
+
+4.5 FROM THE SECURITY FORK: THE BOUND ZKM1 FORM
+
+  From mainnet DAA 6,983,500 every node accepts merged blocks ONLY in this form;
+  the legacy ZKMM||H_zk form above is refused. Testnet runs it from genesis.
+
+  1. H_nf = the ZKas template header hash with the nonce set to 0 (every other
+     field, the timestamp included, as in the template).
+  2. C = BlockHash("zkas_aux_bind1" || genesis_hash || H_nf)
+     (BlockHash = the block-hash function, Blake2b-256 keyed "BlockHash";
+     genesis_hash = the ZKas network's genesis).
+  3. Parent coinbase extra_data: "ZKM1" || 64-char lowercase hex of C, EXACTLY
+     once, and NO "ZKMM" tag.
+  4. Mine the parent against ZKas's bits as before.
+  5. When solved: set the ZKas block's nonce = u64_le(hash(parent_header)[0..8])
+     and submit it with the aux witness. The block hash changes; C does not.
+
+  The node also checks that a ZKas coinbase carries no ZKMM/ZKM1 tag (from DAA
+  6,897,100). Reference: miner/src/merged.rs build_aux_pow_bound (node repo) and
+  bridge-src/bridge/src/merged.rs merge_key / merge_extra_data / chain_hash in
+  https://github.com/firecash/solo-dual-mode (v1.0.12).
+  Spec: https://zkas.info/docs/mining/#zkm1
 
 -------------------------------------------------------------------------------
  5. RPC AND WIRE REFERENCE
@@ -353,7 +383,8 @@ from the block hash.
                       rpc/grpc/core/proto/messages.proto:1122-1125
                       rpc/grpc/core/proto/rpc.proto
 
-  Constants         MERGE_MINE_MAGIC = b"ZKMM"; commitment = the 32-byte H_zk
+  Constants         MERGE_MINE_MAGIC = b"ZKMM" (before the fork; commitment = hex of H_zk)
+                    MERGE_MINE_MAGIC_V1 = b"ZKM1" (from DAA 6,983,500; commitment = hex of C, see 4.5)
                       consensus/core/src/auxpow.rs:47
 
 
