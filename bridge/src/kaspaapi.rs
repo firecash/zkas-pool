@@ -499,6 +499,9 @@ impl KaspaApi {
             Arc::new(Mutex::new(None))
         };
 
+        if merged_mining {
+            info!("{}", crate::merged::fork_config_summary());
+        }
         let api = Arc::new(Self {
             client,
             zkas_node_endpoint: address,
@@ -644,7 +647,13 @@ impl KaspaApi {
     /// `payee` overrides the pool address when a miner supplied its own `kaspa:`
     /// address in the stratum password. Passing `None` pays the pool, which is both
     /// the legacy behaviour and the pool-fee-minute behaviour.
-    async fn fetch_kaspa_parent(&self, h_fc: kaspa_hashes::Hash, payee: Option<&Address>, force: bool) -> Result<Block> {
+    async fn fetch_kaspa_parent(
+        &self,
+        h_fc: kaspa_hashes::Hash,
+        extra_data: Vec<u8>,
+        payee: Option<&Address>,
+        force: bool,
+    ) -> Result<Block> {
         let kc = self.kaspa_client.as_ref().ok_or_else(|| anyhow::anyhow!("no Kaspa node client"))?;
         let pay = match payee {
             Some(a) => a.clone(),
@@ -664,7 +673,6 @@ impl KaspaApi {
             }
         }
         let _permit = self.kaspa_parent_rpc_gate.acquire().await.context("Kaspa parent RPC gate closed")?;
-        let extra_data = kaspa_consensus_core::auxpow::AuxPow::embed_commitment(&[], h_fc, &[]);
         let resp =
             kc.get_block_template_call(None, GetBlockTemplateRequest::new(pay, extra_data)).await.context("kaspa getBlockTemplate")?;
         let parent = Block::try_from(resp.block).map_err(|e| anyhow::anyhow!("kaspa block conversion: {e:?}"))?;
@@ -681,7 +689,8 @@ impl KaspaApi {
         if !self.pending_fc.lock().is_unsolved(&h_fc) {
             return Ok(None);
         }
-        self.fetch_kaspa_parent(h_fc, payee, true).await.map(Some)
+        let Some(fc_block) = self.pending_fc.lock().get(&h_fc) else { return Ok(None) };
+        self.fetch_kaspa_parent(h_fc, crate::merged::merge_extra_data(&fc_block), payee, true).await.map(Some)
     }
 
     /// In real merged mining the parent carries the *Kaspa* target (`header.bits`), but
@@ -720,7 +729,26 @@ impl KaspaApi {
         if !self.merged_mining {
             return None;
         }
-        crate::merged::committed_h_fc(parent_block)
+        // After the security fork the on-chain hash is not the merge key: the nonce is set from
+        // the solved parent. Compute it from the stashed block.
+        let key = crate::merged::committed_h_fc(parent_block)?;
+        match self.pending_fc.lock().get(&key) {
+            Some(fc_block) => Some(crate::merged::chain_hash(parent_block, &fc_block)),
+            // Evicted: before the fork the key IS the block hash; from it the key is a commitment,
+            // not a hash of any block, so name nothing rather than a phantom.
+            None => crate::merged::committed_h_fc_legacy(parent_block),
+        }
+    }
+
+    /// The ZKas DAA score of the block a merged parent commits to (the pool's share windows and
+    /// block age-out are keyed on ZKas DAA, not the Kaspa parent's). `None` outside merged mode or
+    /// when the pending block is gone; callers then fall back to the job's own score.
+    pub fn merged_zkas_daa(&self, parent_block: &Block) -> Option<u64> {
+        if !self.merged_mining {
+            return None;
+        }
+        let key = crate::merged::committed_h_fc(parent_block)?;
+        self.pending_fc.lock().get(&key).map(|b| b.header.daa_score)
     }
 
     pub fn claim_network_solution(&self, job_block: &Block) -> bool {
@@ -1194,7 +1222,7 @@ impl KaspaApi {
                                 // Merged mode: the ASIC hashes a *parent* block committing to this
                                 // ZKas block's hash. Stash the ZKas block so a solved parent
                                 // can be turned back into an aux block in `submit_block`.
-                                let h_fc = block.header.hash;
+                                let h_fc = crate::merged::merge_key(&block);
                                 // Pool-fee minute: this lane's KAS goes to the pool for one
                                 // minute an hour. Computed ONCE here, at template-build time,
                                 // and remembered with the template — see `MergedPending`'s
@@ -1208,7 +1236,7 @@ impl KaspaApi {
                                 let in_fee_minute = crate::merged::is_pool_fee_minute(lane_id, minute_of_hour);
                                 let payee = if in_fee_minute { None } else { kas_payout.as_ref() };
                                 let paid_pool = payee.is_none();
-                                let parent = match self.fetch_kaspa_parent(h_fc, payee, false).await {
+                                let parent = match self.fetch_kaspa_parent(h_fc, crate::merged::merge_extra_data(&block), payee, false).await {
                                     // Real dual-chain: a genuine Kaspa block whose coinbase commits to
                                     // H_fc — clearing its (hard) target also earns KAS.
                                     Ok(p) => p,
@@ -1521,6 +1549,10 @@ impl KaspaApiTrait for KaspaApi {
 
     fn merged_chain_hash(&self, parent_block: &Block) -> Option<kaspa_hashes::Hash> {
         KaspaApi::merged_chain_hash(self, parent_block)
+    }
+
+    fn merged_zkas_daa(&self, parent_block: &Block) -> Option<u64> {
+        KaspaApi::merged_zkas_daa(self, parent_block)
     }
 
     fn claim_network_solution(&self, job_block: &Block) -> bool {

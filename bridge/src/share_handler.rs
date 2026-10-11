@@ -1032,10 +1032,13 @@ impl ShareHandler {
                 // ZKas chain; using it left the pool at "0 blocks confirmed"
                 // for a full day of live mining).
                 use kaspa_consensus_core::hashing::header;
+                // The SOLVED parent: from the security fork the ZKas nonce is derived from the parent
+                // header's hash, so the unsolved template would name a block that never exists.
                 let block_hash = kaspa_api
-                    .merged_chain_hash(&current_job.block)
+                    .merged_chain_hash(&block)
                     .map_or_else(|| header::hash(&block.header).to_string(), |h| h.to_string());
-                let block_daa_score = block.header.daa_score;
+                // ZKas DAA in merged mode (the parent's is the Kaspa chain's), as the accountant expects.
+                let block_daa_score = kaspa_api.merged_zkas_daa(&block).unwrap_or(block.header.daa_score);
 
                 // Emit BlockFound *before* submitting to kaspad so consumers
                 // record the candidate even if our submit_block call hangs
@@ -1449,7 +1452,7 @@ impl ShareHandler {
         // job), not the share's hash_value — accounting downstream
         // multiplies by difficulty to get PROP weight.
         let assigned_diff = credited_job_diff.as_ref().map_or(hash_value, |d| d.diff_value);
-        let job_daa_score = current_job.block.header.daa_score;
+        let job_daa_score = kaspa_api.merged_zkas_daa(&current_job.block).unwrap_or(current_job.block.header.daa_score);
         if let (Ok(wallet_d), Ok(worker_d), Ok(difficulty_d)) =
             (WalletAddress::new(wallet_addr.clone()), WorkerName::new(worker_name.clone()), ShareDifficulty::new(assigned_diff))
         {
@@ -2065,6 +2068,12 @@ pub trait KaspaApiTrait: Send + Sync {
     /// displaying it always fails (the live "0 blocks / never confirmed blue"
     /// bug). `None` ⇒ not merged: the job's own header hash IS the chain hash.
     fn merged_chain_hash(&self, _parent_block: &Block) -> Option<kaspa_hashes::Hash> {
+        None
+    }
+
+    /// The ZKas DAA score of the block a merged parent commits to. `None` ⇒ not merged (the job's
+    /// own header is the ZKas block and carries its score).
+    fn merged_zkas_daa(&self, _parent_block: &Block) -> Option<u64> {
         None
     }
 

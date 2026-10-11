@@ -454,6 +454,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 // Standalone binary is not fronted by the fly edge.
                 proxy_protocol: false,
                 kaspa_common_protocol: instance.kaspa_common_protocol,
+                extranonce_with_size: instance.extranonce_with_size,
             };
 
             listen_and_serve_with_shutdown(

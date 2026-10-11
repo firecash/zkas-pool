@@ -62,11 +62,108 @@ pub fn coinbase_merkle_branch(txs: &[Transaction]) -> Vec<Hash> {
     branch
 }
 
+/// Whether a ZKas block at `daa_score` uses the security-fork merge-mining form. Mainnet
+/// parameters decide; `ZKAS_SECURITY_FORK_DAA` overrides the score for a test network and
+/// `ZKAS_NETWORK` (mainnet|testnet|devnet|simnet) picks the genesis the commitment binds to.
+fn fork_params() -> (Option<u64>, kaspa_consensus_core::config::params::Params) {
+    use kaspa_consensus_core::network::NetworkType;
+    static P: std::sync::OnceLock<(Option<u64>, kaspa_consensus_core::config::params::Params)> = std::sync::OnceLock::new();
+    P.get_or_init(|| {
+        // An unknown value is a misconfiguration that would silently bind every merged block to the
+        // wrong genesis; refuse it instead of guessing mainnet.
+        let raw = std::env::var("ZKAS_NETWORK").unwrap_or_default();
+        let net = match raw.as_str() {
+            "" | "mainnet" => NetworkType::Mainnet,
+            "testnet" => NetworkType::Testnet,
+            "devnet" => NetworkType::Devnet,
+            "simnet" => NetworkType::Simnet,
+            other => panic!("ZKAS_NETWORK={other:?} is not one of mainnet|testnet|devnet|simnet"),
+        };
+        // Never on mainnet: a test value left in a production unit would make the bridge build the
+        // wrong merge-mining form and lose every merged block on one side of the real activation.
+        let daa = std::env::var("ZKAS_SECURITY_FORK_DAA").ok().and_then(|v| v.parse().ok()).filter(|_| net != NetworkType::Mainnet);
+        (daa, kaspa_consensus_core::config::params::Params::from(net))
+    })
+    .clone()
+}
+
+/// One line naming what the bound merge-mining form will bind to, so a wrong network or build is
+/// visible at startup (and an invalid `ZKAS_NETWORK` aborts here, not at the first merged job).
+pub fn fork_config_summary() -> String {
+    let (override_daa, params) = fork_params();
+    format!(
+        "merge-mining fork config: network={} genesis={} security_fork_activation={:?} override={:?}",
+        params.net, params.genesis.hash, params.security_fork_activation, override_daa
+    )
+}
+
+fn bound_form(daa_score: u64) -> Option<Hash> {
+    let (override_daa, params) = fork_params();
+    let active = match override_daa {
+        Some(d) => daa_score >= d,
+        None => params.security_fork_activation.is_active(daa_score),
+    };
+    active.then_some(params.genesis.hash)
+}
+
+/// The value a parent commits to for `fc_block`, which is also the key pending work is stored
+/// under. Before the security fork: the block hash `H_fc`. From it: the genesis-bound commitment
+/// over the header hash with the nonce zeroed, because the nonce is set only after the parent is
+/// solved (it must equal the parent's hash), so `H_fc` is not known until then.
+pub fn merge_key(fc_block: &Block) -> Hash {
+    merge_key_with(fc_block, bound_form(fc_block.header.daa_score))
+}
+
+fn merge_key_with(fc_block: &Block, bound: Option<Hash>) -> Hash {
+    match bound {
+        None => fc_block.header.hash,
+        Some(genesis) => AuxPow::bound_commitment(
+            genesis,
+            hashing::header::hash_override_nonce_time(&fc_block.header, 0, fc_block.header.timestamp),
+        ),
+    }
+}
+
+/// The extra data a parent coinbase carries for `fc_block` (`ZKMM‖hex` before the fork,
+/// `ZKM1‖hex` from it).
+pub fn merge_extra_data(fc_block: &Block) -> Vec<u8> {
+    merge_extra_data_with(fc_block, bound_form(fc_block.header.daa_score))
+}
+
+fn merge_extra_data_with(fc_block: &Block, bound: Option<Hash>) -> Vec<u8> {
+    let key = merge_key_with(fc_block, bound);
+    match bound {
+        None => AuxPow::embed_commitment(&[], key, &[]),
+        Some(_) => AuxPow::embed_commitment_v1(&[], key, &[]),
+    }
+}
+
+/// The ZKas block hash that lands on chain for `fc_block` solved by `parent_block`.
+pub fn chain_hash(parent_block: &Block, fc_block: &Block) -> Hash {
+    chain_hash_with(parent_block, fc_block, bound_form(fc_block.header.daa_score))
+}
+
+fn chain_hash_with(parent_block: &Block, fc_block: &Block, bound: Option<Hash>) -> Hash {
+    match bound {
+        None => fc_block.header.hash,
+        Some(_) => {
+            let mut h = (*fc_block.header).clone();
+            h.nonce = AuxPow::nonce_binding(&parent_block.header);
+            h.finalize();
+            h.hash
+        }
+    }
+}
+
 /// Build the parent block an ASIC hashes in merged mode: one coinbase committing to
-/// `H_fc`, with the ZKas target. Returns `(parent_block, h_fc)`.
+/// the merge key (see [`merge_key`]), with the ZKas target. Returns `(parent_block, key)`.
 pub fn build_parent_block(fc_block: &Block) -> (Block, Hash) {
-    let h_fc = fc_block.header.hash;
-    let coinbase = Transaction::new(0, vec![], vec![], 0, SUBNETWORK_ID_COINBASE, 0, AuxPow::embed_commitment(&[], h_fc, &[]));
+    build_parent_block_with(fc_block, bound_form(fc_block.header.daa_score))
+}
+
+fn build_parent_block_with(fc_block: &Block, bound: Option<Hash>) -> (Block, Hash) {
+    let h_fc = merge_key_with(fc_block, bound);
+    let coinbase = Transaction::new(0, vec![], vec![], 0, SUBNETWORK_ID_COINBASE, 0, merge_extra_data_with(fc_block, bound));
     let hash_merkle_root = calc_hash_merkle_root(std::iter::once(&coinbase));
 
     let mut parent = Header::from_precomputed_hash(ZERO_HASH, vec![Hash::from_u64_word(0xF12E_CA54)]);
@@ -80,10 +177,17 @@ pub fn build_parent_block(fc_block: &Block) -> (Block, Hash) {
 
 /// The `H_fc` a parent block commits to (from its coinbase), or `None` if it carries
 /// no valid commitment (i.e. this wasn't a merged-mining parent).
+/// The legacy (`ZKMM`) commitment alone, which is the ZKas block hash itself.
+pub fn committed_h_fc_legacy(parent_block: &Block) -> Option<Hash> {
+    let coinbase = parent_block.transactions.first()?.clone();
+    AuxPow { parent_header: (*parent_block.header).clone(), parent_coinbase: coinbase, coinbase_merkle_branch: vec![] }.committed_hash()
+}
+
 pub fn committed_h_fc(parent_block: &Block) -> Option<Hash> {
     let coinbase = parent_block.transactions.first()?.clone();
-    AuxPow { parent_header: (*parent_block.header).clone(), parent_coinbase: coinbase, coinbase_merkle_branch: vec![] }
-        .committed_hash()
+    // Either tag: `ZKMM` (block hash, before the security fork) or `ZKM1` (bound commitment, from it).
+    let aux = AuxPow { parent_header: (*parent_block.header).clone(), parent_coinbase: coinbase, coinbase_merkle_branch: vec![] };
+    aux.committed_hash().or_else(|| aux.committed_hash_v1())
 }
 
 /// Assemble the ZKas block carrying the AuxPoW proof, from the solved `parent_block`
@@ -92,10 +196,20 @@ pub fn committed_h_fc(parent_block: &Block) -> Option<Hash> {
 /// Builds the *real* coinbase Merkle branch from the parent's transactions, so this is
 /// correct for real multi-tx Kaspa parents (not just the single-tx synthetic case).
 pub fn assemble_aux_block(parent_block: &Block, fc_block: &Block) -> Block {
+    assemble_aux_block_with(parent_block, fc_block, bound_form(fc_block.header.daa_score))
+}
+
+fn assemble_aux_block_with(parent_block: &Block, fc_block: &Block, bound: Option<Hash>) -> Block {
     let coinbase = parent_block.transactions[0].clone();
     let branch = coinbase_merkle_branch(&parent_block.transactions);
     let aux = AuxPow { parent_header: (*parent_block.header).clone(), parent_coinbase: coinbase, coinbase_merkle_branch: branch };
-    let fc_header = (*fc_block.header).clone().with_aux_pow(aux);
+    let mut header = (*fc_block.header).clone();
+    if bound.is_some() {
+        // Security fork: the block's nonce names its parent. Set it now, after the parent is solved.
+        header.nonce = AuxPow::nonce_binding(&parent_block.header);
+        header.finalize();
+    }
+    let fc_header = header.with_aux_pow(aux);
     Block::new(fc_header, (*fc_block.transactions).clone())
 }
 
@@ -188,6 +302,82 @@ mod tests {
     fn tx(tag: u8) -> Transaction {
         use kaspa_consensus_core::subnets::SUBNETWORK_ID_NATIVE;
         Transaction::new(0, vec![], vec![], 0, SUBNETWORK_ID_NATIVE, 0, vec![tag; 16])
+    }
+
+    /// The full post-fork round trip the bridge performs, checked by the node's own verifier: key the
+    /// work by the bound commitment, build a parent committing it under `ZKM1`, solve the parent, read
+    /// the key back from the solved parent, assemble with the parent-derived nonce. The assembled
+    /// block must pass `AuxRule::Bound`, its hash must be what `chain_hash` reports, and a parent
+    /// built the pre-fork way must not back it.
+    #[test]
+    fn security_fork_round_trip_passes_the_node_verifier() {
+        use kaspa_pow::auxpow::{check_pow_gated, AuxRule};
+        const EASY_BITS: u32 = 0x207f_ffff; // about half of all nonces pass
+        let genesis = Hash::from_u64_word(0x6e6e);
+        let target = kaspa_math::Uint256::from_compact_target_bits(EASY_BITS);
+        let mut exercised = 0;
+        for seed in 1..64u64 {
+            let header = Header::new_finalized(
+                1,
+                vec![vec![Hash::from_u64_word(seed)]].try_into().unwrap(),
+                Hash::from_u64_word(seed.wrapping_mul(3)),
+                ZERO_HASH,
+                ZERO_HASH,
+                1_700_000_000_000 + seed,
+                EASY_BITS,
+                0,
+                1_000,
+                0.into(),
+                0,
+                ZERO_HASH,
+            );
+            let fc = Block::new(header, vec![]);
+            let (mut parent, key) = build_parent_block_with(&fc, Some(genesis));
+            assert_ne!(key, fc.header.hash, "post-fork work is keyed by the nonce-free commitment");
+            assert_eq!(committed_h_fc(&parent), Some(key), "the solved parent maps back to the stashed work");
+            assert_eq!(committed_h_fc_legacy(&parent), None, "a bound parent names no block hash on its own");
+            // A solved parent with a DIFFERENT nonce is a different ZKas block (one template, many blocks).
+            let mut other = (*parent.header).clone();
+            other.nonce ^= 1;
+            other.finalize();
+            let other = Block::new(other, (*parent.transactions).clone());
+            assert_ne!(chain_hash_with(&parent, &fc, Some(genesis)), chain_hash_with(&other, &fc, Some(genesis)));
+
+            // Solve the parent against the ZKas target, as the ASIC would.
+            let mut h = (*parent.header).clone();
+            let state = kaspa_pow::State::new(&h);
+            h.nonce = (0u64..).find(|n| state.calculate_pow(*n) <= target).unwrap();
+            h.finalize();
+            parent = Block::new(h, (*parent.transactions).clone());
+
+            let block = assemble_aux_block_with(&parent, &fc, Some(genesis));
+            assert_eq!(block.header.nonce, AuxPow::nonce_binding(&parent.header));
+            assert_eq!(block.header.hash, chain_hash_with(&parent, &fc, Some(genesis)));
+            if kaspa_pow::State::new(&block.header).check_pow(block.header.nonce).0 {
+                continue; // natively valid by chance; pick a block that needs the witness
+            }
+            let aux = block.header.aux_pow.as_ref().expect("assembled block carries its witness");
+            assert!(check_pow_gated(&block.header, Some(aux), AuxRule::Bound(genesis)).0, "bridge output passes the bound rule");
+            assert!(!check_pow_gated(&block.header, Some(aux), AuxRule::Bound(Hash::from_u64_word(1))).0, "bound to its own chain");
+
+            // The same work assembled the pre-fork way is refused under the bound rule.
+            let (legacy_parent, legacy_key) = build_parent_block_with(&fc, None);
+            assert_eq!(legacy_key, fc.header.hash);
+            assert_eq!(committed_h_fc_legacy(&legacy_parent), Some(fc.header.hash), "pre-fork the key is the hash");
+            let legacy = assemble_aux_block_with(&legacy_parent, &fc, None);
+            let legacy_aux = legacy.header.aux_pow.as_ref().unwrap();
+            // A header that is natively valid needs no witness at all, so only judge the witness
+            // where it is the block's sole proof of work.
+            if !kaspa_pow::State::new(&legacy.header).check_pow(legacy.header.nonce).0 {
+                assert!(!check_pow_gated(&legacy.header, Some(legacy_aux), AuxRule::Bound(genesis)).0, "legacy witness refused");
+                assert!(check_pow_gated(&legacy.header, Some(legacy_aux), AuxRule::Legacy).0 || {
+                    // An unsolved legacy parent only passes if its hash meets the target by chance.
+                    !kaspa_pow::State::new(&legacy_parent.header).check_pow(legacy_parent.header.nonce).0
+                });
+            }
+            exercised += 1;
+        }
+        assert!(exercised > 10, "the witness path ran ({exercised} blocks)");
     }
 
     #[test]
